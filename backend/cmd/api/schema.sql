@@ -130,6 +130,21 @@ CREATE TABLE IF NOT EXISTS api_keys (
  revoked_at TIMESTAMPTZ
 );
 CREATE INDEX IF NOT EXISTS api_keys_owner ON api_keys(user_id,revoked_at);
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS pipeline_token_hash TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS apps_pipeline_token ON apps(pipeline_token_hash) WHERE pipeline_token_hash IS NOT NULL;
+CREATE TABLE IF NOT EXISTS app_releases (
+ id TEXT PRIMARY KEY,
+ app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
+ image TEXT NOT NULL,
+ commit_sha TEXT NOT NULL DEFAULT '',
+ note TEXT NOT NULL DEFAULT '',
+ request_id TEXT NOT NULL,
+ status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','rejected','queued')),
+ job_id TEXT UNIQUE REFERENCES jobs(id),
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+ decided_at TIMESTAMPTZ,
+ UNIQUE(app_id,request_id)
+);
 ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'api' CHECK(scope IN ('api','mcp_read','mcp_propose'));
 ALTER TABLE change_requests ADD COLUMN IF NOT EXISTS mcp_request_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS changes_mcp_request ON change_requests(requested_by,mcp_request_id) WHERE mcp_request_id IS NOT NULL;

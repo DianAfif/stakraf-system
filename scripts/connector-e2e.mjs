@@ -43,12 +43,27 @@ try{
   execFileSync('sudo',['bash',installer,'--url',base,'--allow-http','--token-file',rootToken],{stdio:'pipe',timeout:120000});
   execFileSync('sudo',['systemctl','is-active','--quiet','stakraf-agent']);
   await waitFor('online host with Docker readiness',async()=>{const host=(await request('/api/servers')).find(item=>item.id===server.id);return host?.online&&host?.docker_ready},60000);
-  assert.match(execFileSync('/usr/local/bin/stakraf-agent',['--version'],{encoding:'utf8'}),/0\.4\.0/);
+  assert.match(execFileSync('/usr/local/bin/stakraf-agent',['--version'],{encoding:'utf8'}),/0\.5\.0/);
   const app=await request('/api/apps','POST',{project_id:project.id,server_id:server.id,name:'real-web',image:'nginxinc/nginx-unprivileged:stable-alpine',host_port:18088,container_port:8080},201);
   assert.match(app.id,/^[a-f0-9]{24}$/);containers.push(`stakraf-${app.id}`);
   await waitFor('real container deployment',()=>jobFinished(app.job_id));
   const web=await fetch('http://127.0.0.1:18088');assert.equal(web.status,200);assert.match(await web.text(),/Welcome to nginx/);
   assert.equal((await request('/api/apps')).find(item=>item.id===app.id).status,'running');
+  // Resolve an immutable digest and perform a real approved replacement.
+  const imageDigest=execFileSync('docker',['image','inspect','--format','{{index .RepoDigests 0}}','nginxinc/nginx-unprivileged:stable-alpine'],{encoding:'utf8'}).trim();
+  const release=await request(`/api/apps/${app.id}/releases`,'POST',{image:imageDigest,note:'Real digest upgrade',request_id:randomUUID()},201);
+  const upgrade=await request(`/api/apps/${app.id}/releases/${release.id}/decision`,'POST',{decision:'approve'});
+  await waitFor('approved container replacement',()=>jobFinished(upgrade.job_id));
+  assert.equal((await fetch('http://127.0.0.1:18088')).status,200);
+  assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
+  // A valid image with an exiting entrypoint must restore the prior container.
+  execFileSync('docker',['pull','busybox:stable'],{stdio:'pipe'});
+  const exitingDigest=execFileSync('docker',['image','inspect','--format','{{index .RepoDigests 0}}','busybox:stable'],{encoding:'utf8'}).trim();
+  const broken=await request(`/api/apps/${app.id}/releases`,'POST',{image:exitingDigest,note:'Expected startup failure',request_id:randomUUID()},201);
+  const brokenDecision=await request(`/api/apps/${app.id}/releases/${broken.id}/decision`,'POST',{decision:'approve'});
+  await waitFor('failed upgrade and automatic restoration',async()=>{const j=(await request('/api/jobs')).find(x=>x.id===brokenDecision.job_id);if(j?.status==='failed'){assert.match(j.output,/previous container restored/);return true}return false});
+  assert.equal((await fetch('http://127.0.0.1:18088')).status,200,'Prior application responds after failed replacement');
+  assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
   const logJob=await request(`/api/apps/${app.id}/actions`,'POST',{kind:'logs'},201);
   await waitFor('real logs',()=>jobFinished(logJob.job_id));
   assert.ok((await request('/api/jobs')).find(item=>item.id===logJob.job_id).output.length>0);

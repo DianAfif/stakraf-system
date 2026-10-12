@@ -39,7 +39,7 @@ const agent = await request('/api/agent/enroll', { method: 'POST', anonymous: tr
 await request('/api/agent/enroll', { method: 'POST', anonymous: true, body: enrollment, status: 401 });
 await request('/api/agent/heartbeat', {
   method: 'POST', token: agent.agent_token,
-  body: { hostname: 'ci-host', os: 'linux', cpu: 25, memory: 40, disk: 15, agent_version: 'smoke', netbird_status: 'unknown', docker_ready: true, docker_version: 'test' },
+  body: { hostname: 'ci-host', os: 'linux', cpu: 25, memory: 40, disk: 15, agent_version: '0.5.0', netbird_status: 'unknown', docker_ready: true, docker_version: 'test' },
 });
 assert.equal((await request(`/api/telemetry?server_id=${server.id}`))[0].cpu, 25);
 const app = await request('/api/apps', {
@@ -176,6 +176,38 @@ assert.equal((await rpc(otherKey.key,'get_server_telemetry',{server_id:server.id
 assert.equal((await rpc(otherKey.key,'propose_change',{...proposalArgs,request_id:randomUUID()})).result.isError,true);
 cookie=otherCookie;
 await request(`/api/keys/${proposeKey.id}`,{method:'DELETE'});
+const pipeline = await request(`/api/apps/${app.id}/pipeline-key`,{method:'POST',status:201});
+await request('/api/projects',{token:pipeline.key,status:401});
+await request(`/api/apps/${retryApp.id}/pipeline-key`,{method:'POST',token:pipeline.key,status:401});
+const digest='nginx@sha256:'+'a'.repeat(64);
+const releaseInput={image:digest,commit_sha:'b'.repeat(40),note:'Isolated CI release',request_id:randomUUID()};
+const jobsBeforeRelease=(await request('/api/jobs')).length;
+const submitRelease=(body=releaseInput)=>request('/api/pipeline/releases',{method:'POST',token:pipeline.key,body,status:201});
+const submitted=await Promise.all([submitRelease(),submitRelease()]);
+assert.equal(submitted[0].id,submitted[1].id,'Concurrent CI retries deduplicate');
+assert.equal((await request('/api/jobs')).length,jobsBeforeRelease,'CI submission never executes');
+await request('/api/pipeline/releases',{method:'POST',token:pipeline.key,body:{...releaseInput,image:'nginx:latest'},status:400});
+await request('/api/pipeline/releases',{method:'POST',token:pipeline.key,body:{...releaseInput,note:'different'},status:409});
+await request(`/api/apps/${app.id}/releases/${submitted[0].id}/decision`,{method:'POST',token:pipeline.key,body:{decision:'approve'},status:401});
+const releaseDecision=await request(`/api/apps/${app.id}/releases/${submitted[0].id}/decision`,{method:'POST',body:{decision:'approve'}});
+await request(`/api/apps/${app.id}/releases/${submitted[0].id}/decision`,{method:'POST',body:{decision:'approve'},status:404});
+assert.notEqual((await request('/api/apps')).find(a=>a.id===app.id).image,digest,'Image changes only after success');
+const releaseClaim=(await poll()).job;
+assert.equal(releaseClaim.id,releaseDecision.job_id);
+assert.equal(releaseClaim.payload.replace,true);
+assert.equal(releaseClaim.payload.image,digest);
+await complete(releaseClaim.id,true,'Simulated successful digest upgrade');
+assert.equal((await request('/api/apps')).find(a=>a.id===app.id).image,digest);
+assert.equal((await request(`/api/apps/${app.id}/releases`))[0].status,'success');
+await request(`/api/jobs/${releaseClaim.id}/retry`,{method:'POST',status:409});
+const rotated=await request(`/api/apps/${app.id}/pipeline-key`,{method:'POST',status:201});
+await request('/api/pipeline/releases',{method:'POST',token:pipeline.key,body:releaseInput,status:401});
+await request(`/api/apps/${app.id}/pipeline-key`,{method:'DELETE'});
+await request('/api/pipeline/releases',{method:'POST',token:rotated.key,body:releaseInput,status:401});
+await request('/api/auth/signup',{method:'POST',body:{email:`release-other-${randomUUID()}@example.test`,password:randomUUID()}});
+await request(`/api/apps/${app.id}/releases`,{status:404});
+await request(`/api/apps/${app.id}/pipeline-key`,{method:'POST',status:404});
+cookie=otherCookie;
 await request(`/api/keys/${key.id}`, { method: 'DELETE' });
 await request('/mcp', { method: 'POST', token: key.key, body: mcp, status: 401 });
 await request('/api/auth/logout', { method: 'POST' });

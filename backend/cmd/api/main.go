@@ -150,6 +150,10 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 		a.mcp(w, r)
 		return
 	}
+	if p == "/api/pipeline/releases" {
+		a.pipelineRelease(w, r)
+		return
+	}
 	if p == "/api/health" {
 		if a.db.PingContext(r.Context()) != nil {
 			fail(w, 503, "Database unavailable")
@@ -219,6 +223,8 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 		a.apps(w, r, uid)
 	case p == "/api/apps" && r.Method == "POST":
 		a.createApp(w, r, uid)
+	case strings.HasPrefix(p, "/api/apps/") && (strings.Contains(p, "/releases") || strings.HasSuffix(p, "/pipeline-key")):
+		a.releaseRoute(w, r, uid)
 	case strings.HasPrefix(p, "/api/apps/") && strings.HasSuffix(p, "/actions") && r.Method == "POST":
 		a.action(w, r, uid)
 	case p == "/api/jobs" && r.Method == "GET":

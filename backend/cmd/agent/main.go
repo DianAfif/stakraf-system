@@ -33,6 +33,7 @@ type Job struct {
 		Image         string `json:"image"`
 		HostPort      int    `json:"host_port"`
 		ContainerPort int    `json:"container_port"`
+		Replace       bool   `json:"replace"`
 	} `json:"payload"`
 }
 type client struct {
@@ -108,6 +109,9 @@ func runJob(j Job) (bool, string) {
 	name := "stakraf-" + j.AppID
 	switch j.Kind {
 	case "deploy":
+		if j.Payload.Replace {
+			return runRelease(ctx, j)
+		}
 		if j.Payload.HostPort < 1024 || j.Payload.HostPort > 65535 || j.Payload.ContainerPort < 1 || j.Payload.ContainerPort > 65535 || strings.ContainsAny(j.Payload.Image, " \r\n\t\x00") || len(j.Payload.Image) > 230 {
 			return false, "Invalid deployment specification"
 		}
@@ -178,7 +182,7 @@ func (c *client) heartbeatLoop(ctx context.Context, host string, interval time.D
 		cpu, mem, disk := serverMetrics()
 		ready, version, detail, containers, complete := dockerInventory()
 		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := c.call(requestCtx, "POST", "/api/agent/heartbeat", map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "netbird_ip": ip, "netbird_status": nb, "cpu": cpu, "memory": mem, "disk": disk, "agent_version": "0.4.0", "docker_ready": ready, "docker_version": version, "docker_error": detail, "containers": containers, "inventory_complete": complete}, nil)
+		err := c.call(requestCtx, "POST", "/api/agent/heartbeat", map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "netbird_ip": ip, "netbird_status": nb, "cpu": cpu, "memory": mem, "disk": disk, "agent_version": "0.5.0", "docker_ready": ready, "docker_version": version, "docker_error": detail, "containers": containers, "inventory_complete": complete}, nil)
 		cancel()
 		if err != nil {
 			log.Printf("heartbeat: %v", err)
@@ -221,7 +225,7 @@ func main() {
 	versionOnly := flag.Bool("version", false, "Print the connector version")
 	flag.Parse()
 	if *versionOnly {
-		fmt.Println("stakraf-agent 0.4.0")
+		fmt.Println("stakraf-agent 0.5.0")
 		return
 	}
 	base := strings.TrimRight(getenv("STAKRAF_API_URL", ""), "/")

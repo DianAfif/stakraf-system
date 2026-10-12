@@ -58,6 +58,8 @@ The backend uses Go `pgx` and `bcrypt`, and the UI uses React and Vite. Go check
 
 ## Integration architecture
 
+See [Applications & CI/CD](docs/APPLICATIONS-CICD.md) for digest releases, application-scoped pipeline keys, human approval and startup-failure restoration. Release upgrades require connector version 0.5 or newer.
+
 To verify an isolated running test stack, run `node scripts/smoke.mjs` (Node 22+). Override `STAKRAF_SMOKE_URL` when needed. This creates test accounts and resources and checks authentication, single-use enrollment, telemetry, approval gates, incidents, settings, audit records, and MCP key revocation. It does not execute Docker jobs on a target host. CI uses a disposable database for this check.
 
 The deployment console shows recent execution metrics, filters by state/project/host/operation, and opens a job inspector with lifecycle timestamps and downloadable output. Queued jobs can be cancelled. Eligible retries are linked to the original job; controlled operations need fresh approval. Host heartbeats continue during long operations. Work without a confirmed result is marked for inspection rather than automatically replayed. See [execution lifecycle](docs/API.md#execution-lifecycle).
