@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -26,9 +28,10 @@ import (
 var sqlFiles embed.FS
 
 type API struct {
-	db     *sql.DB
-	origin string
-	secure bool
+	db         *sql.DB
+	origin     string
+	secure     bool
+	loginLimit authLimiter
 }
 type M = map[string]any
 
@@ -134,6 +137,15 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	p := r.URL.Path
+	if r.Method == "POST" && (p == "/api/auth/login" || p == "/api/auth/signup") && !a.loginLimit.allow(r.RemoteAddr, time.Now()) {
+		w.Header().Set("Retry-After", "60")
+		fail(w, 429, "Too many sign-in attempts. Try again in a minute.")
+		return
+	}
+	if strings.HasPrefix(p, "/api/connector/") {
+		a.connectorAsset(w, r)
+		return
+	}
 	if p == "/mcp" {
 		a.mcp(w, r)
 		return
@@ -148,6 +160,19 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == "/api/auth/signup" && r.Method == "POST" {
 		a.signup(w, r)
+		return
+	}
+	if p == "/api/auth/options" && r.Method == "GET" {
+		available := env("STAKRAF_SIGNUP_MODE", "first_user") == "open"
+		if env("STAKRAF_SIGNUP_MODE", "first_user") == "first_user" {
+			var exists bool
+			if err := a.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM users)").Scan(&exists); err != nil {
+				fail(w, 503, "Account setup unavailable")
+				return
+			}
+			available = !exists
+		}
+		jsonOut(w, 200, M{"signup_available": available, "setup_required": available && env("STAKRAF_SIGNUP_MODE", "first_user") == "first_user"})
 		return
 	}
 	if p == "/api/auth/login" && r.Method == "POST" {
@@ -188,6 +213,8 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 		a.createServer(w, r, uid)
 	case strings.HasPrefix(p, "/api/servers/") && strings.HasSuffix(p, "/enrollment") && r.Method == "POST":
 		a.regenerate(w, r, uid)
+	case strings.HasPrefix(p, "/api/servers/") && strings.HasSuffix(p, "/disconnect") && r.Method == "POST":
+		a.disconnectServer(w, r, uid)
 	case p == "/api/apps" && r.Method == "GET":
 		a.apps(w, r, uid)
 	case p == "/api/apps" && r.Method == "POST":
@@ -206,8 +233,9 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 }
 func (a *API) signup(w http.ResponseWriter, r *http.Request) {
 	var x struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email      string `json:"email"`
+		Password   string `json:"password"`
+		SetupToken string `json:"setup_token"`
 	}
 	if read(r, &x) != nil {
 		fail(w, 400, "Invalid input")
@@ -224,9 +252,48 @@ func (a *API) signup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	uid := id()
-	_, e = a.db.ExecContext(r.Context(), "INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)", uid, x.Email, string(pw))
+	tx, e := a.db.BeginTx(r.Context(), nil)
+	if e != nil {
+		fail(w, 500, "Account setup unavailable")
+		return
+	}
+	defer tx.Rollback()
+	mode := env("STAKRAF_SIGNUP_MODE", "first_user")
+	if mode != "open" {
+		if mode != "first_user" {
+			fail(w, 403, "Registration is closed. Sign in to your existing workspace.")
+			return
+		}
+		if _, e = tx.ExecContext(r.Context(), "SELECT pg_advisory_xact_lock(74625103)"); e != nil {
+			fail(w, 500, "Account setup unavailable")
+			return
+		}
+		var exists bool
+		if e = tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM users)").Scan(&exists); e != nil {
+			fail(w, 500, "Account setup unavailable")
+			return
+		}
+		if exists {
+			fail(w, 403, "This console is already set up. Sign in to your existing workspace.")
+			return
+		}
+		expected := os.Getenv("STAKRAF_SETUP_TOKEN")
+		if len(expected) < 24 {
+			fail(w, 503, "Set a console setup token before creating the first account.")
+			return
+		}
+		if subtle.ConstantTimeCompare([]byte(x.SetupToken), []byte(expected)) != 1 {
+			fail(w, 403, "A valid console setup code is required.")
+			return
+		}
+	}
+	_, e = tx.ExecContext(r.Context(), "INSERT INTO users(id,email,password_hash) VALUES($1,$2,$3)", uid, x.Email, string(pw))
 	if e != nil {
 		fail(w, 409, "Email already registered")
+		return
+	}
+	if tx.Commit() != nil {
+		fail(w, 500, "Could not save account")
 		return
 	}
 	a.newSession(w, r, uid)
@@ -299,7 +366,7 @@ func (a *API) createProject(w http.ResponseWriter, r *http.Request, u string) {
 	jsonOut(w, 201, M{"id": i, "name": x.Name})
 }
 func (a *API) servers(w http.ResponseWriter, r *http.Request, u string) {
-	rows, e := a.db.QueryContext(r.Context(), `SELECT s.id,s.project_id,s.name,s.hostname,s.os,s.netbird_ip,s.netbird_status,s.last_seen,s.agent_token_hash IS NOT NULL,p.name,s.cpu_percent,s.memory_percent,s.disk_percent,s.agent_version FROM servers s JOIN projects p ON s.project_id=p.id WHERE p.owner_id=$1 ORDER BY s.created_at DESC`, u)
+	rows, e := a.db.QueryContext(r.Context(), `SELECT s.id,s.project_id,s.name,s.hostname,s.os,s.netbird_ip,s.netbird_status,s.last_seen,s.agent_token_hash IS NOT NULL,p.name,s.cpu_percent,s.memory_percent,s.disk_percent,s.agent_version,s.docker_ready,s.docker_version,s.docker_error FROM servers s JOIN projects p ON s.project_id=p.id WHERE p.owner_id=$1 ORDER BY s.created_at DESC`, u)
 	if e != nil {
 		fail(w, 500, "Database error")
 		return
@@ -312,9 +379,11 @@ func (a *API) servers(w http.ResponseWriter, r *http.Request, u string) {
 		var connected bool
 		var cpu, memory, disk float64
 		var agentVersion string
-		if rows.Scan(&i, &p, &n, &h, &osName, &ip, &net, &seen, &connected, &project, &cpu, &memory, &disk, &agentVersion) == nil {
+		var dockerReady bool
+		var dockerVersion, dockerError string
+		if rows.Scan(&i, &p, &n, &h, &osName, &ip, &net, &seen, &connected, &project, &cpu, &memory, &disk, &agentVersion, &dockerReady, &dockerVersion, &dockerError) == nil {
 			online := seen.Valid && time.Since(seen.Time) < 45*time.Second
-			data = append(data, M{"id": i, "project_id": p, "project_name": project, "name": n, "hostname": h, "os": osName, "netbird_ip": ip, "netbird_status": net, "online": online, "enrolled": connected, "last_seen": seen.Time, "cpu": cpu, "memory": memory, "disk": disk, "agent_version": agentVersion})
+			data = append(data, M{"id": i, "project_id": p, "project_name": project, "name": n, "hostname": h, "os": osName, "netbird_ip": ip, "netbird_status": net, "online": online, "enrolled": connected, "last_seen": seen.Time, "cpu": cpu, "memory": memory, "disk": disk, "agent_version": agentVersion, "docker_ready": dockerReady, "docker_version": dockerVersion, "docker_error": dockerError})
 		}
 	}
 	jsonOut(w, 200, data)
@@ -387,16 +456,23 @@ func (a *API) agentHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.URL.Path == "/api/agent/status" && r.Method == "GET":
+		jsonOut(w, 200, M{"server_id": sid, "status": "connected"})
 	case r.URL.Path == "/api/agent/heartbeat" && r.Method == "POST":
 		var x struct {
-			Hostname      string  `json:"hostname"`
-			OS            string  `json:"os"`
-			NetBirdIP     string  `json:"netbird_ip"`
-			NetBirdStatus string  `json:"netbird_status"`
-			CPU           float64 `json:"cpu"`
-			Memory        float64 `json:"memory"`
-			Disk          float64 `json:"disk"`
-			AgentVersion  string  `json:"agent_version"`
+			Hostname          string            `json:"hostname"`
+			OS                string            `json:"os"`
+			NetBirdIP         string            `json:"netbird_ip"`
+			NetBirdStatus     string            `json:"netbird_status"`
+			CPU               float64           `json:"cpu"`
+			Memory            float64           `json:"memory"`
+			Disk              float64           `json:"disk"`
+			AgentVersion      string            `json:"agent_version"`
+			DockerReady       bool              `json:"docker_ready"`
+			DockerVersion     string            `json:"docker_version"`
+			DockerError       string            `json:"docker_error"`
+			Containers        []ContainerReport `json:"containers"`
+			InventoryComplete bool              `json:"inventory_complete"`
 		}
 		if read(r, &x) != nil {
 			fail(w, 400, "Invalid heartbeat")
@@ -406,7 +482,26 @@ func (a *API) agentHandler(w http.ResponseWriter, r *http.Request) {
 			fail(w, 400, "Invalid heartbeat metadata")
 			return
 		}
-		_, _ = a.db.ExecContext(r.Context(), "UPDATE servers SET hostname=$1,os=$2,netbird_ip=$3,netbird_status=$4,last_seen=now(),cpu_percent=$6,memory_percent=$7,disk_percent=$8,agent_version=$9 WHERE id=$5", x.Hostname, x.OS, x.NetBirdIP, x.NetBirdStatus, sid, x.CPU, x.Memory, x.Disk, x.AgentVersion)
+		if len(x.DockerVersion) > 100 || len(x.DockerError) > 500 || !validContainerReports(x.Containers) {
+			fail(w, 400, "Invalid Docker inventory")
+			return
+		}
+		tokenHash := hash(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		result, err := a.db.ExecContext(r.Context(), "UPDATE servers SET hostname=$1,os=$2,netbird_ip=$3,netbird_status=$4,last_seen=now(),cpu_percent=$6,memory_percent=$7,disk_percent=$8,agent_version=$9,docker_ready=$10,docker_version=$11,docker_error=$12 WHERE id=$5 AND agent_token_hash=$13", x.Hostname, x.OS, x.NetBirdIP, x.NetBirdStatus, sid, x.CPU, x.Memory, x.Disk, x.AgentVersion, x.DockerReady, x.DockerVersion, x.DockerError, tokenHash)
+		if err != nil {
+			fail(w, 500, "Could not record heartbeat")
+			return
+		}
+		if count, _ := result.RowsAffected(); count == 0 {
+			fail(w, 401, "Connector was disconnected")
+			return
+		}
+		if x.DockerReady && x.InventoryComplete {
+			if err = a.reconcileContainers(r.Context(), sid, tokenHash, x.Containers); err != nil {
+				fail(w, 500, "Could not record Docker inventory")
+				return
+			}
+		}
 		_, _ = a.db.ExecContext(r.Context(), `INSERT INTO telemetry(server_id,cpu,memory,disk) SELECT $1,$2,$3,$4 WHERE NOT EXISTS (SELECT 1 FROM telemetry WHERE server_id=$1 AND recorded_at>now()-interval '1 minute')`, sid, x.CPU, x.Memory, x.Disk)
 		jsonOut(w, 200, M{"ok": true})
 	case r.URL.Path == "/api/agent/jobs/next" && r.Method == "GET":
@@ -457,8 +552,8 @@ func (a *API) createApp(w http.ResponseWriter, r *http.Request, u string) {
 		return
 	}
 	var match int
-	if a.db.QueryRowContext(r.Context(), "SELECT 1 FROM servers s JOIN projects p ON s.project_id=p.id WHERE s.id=$1 AND p.id=$2 AND p.owner_id=$3 AND s.agent_token_hash IS NOT NULL", x.ServerID, x.ProjectID, u).Scan(&match) != nil {
-		fail(w, 400, "Select a connected server in this project")
+	if a.db.QueryRowContext(r.Context(), "SELECT 1 FROM servers s JOIN projects p ON s.project_id=p.id WHERE s.id=$1 AND p.id=$2 AND p.owner_id=$3 AND s.agent_token_hash IS NOT NULL AND s.docker_ready=true AND s.last_seen>now()-interval '45 seconds'", x.ServerID, x.ProjectID, u).Scan(&match) != nil {
+		fail(w, 400, "Select an online server with Docker ready in this project")
 		return
 	}
 	appID, jobID := id(), id()
@@ -532,6 +627,18 @@ func (a *API) jobs(w http.ResponseWriter, r *http.Request, u string) {
 	jsonOut(w, 200, data)
 }
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--healthcheck" {
+		client := http.Client{Timeout: 3 * time.Second}
+		response, err := client.Get("http://127.0.0.1:" + env("PORT", "8080") + "/api/health")
+		if err != nil {
+			os.Exit(1)
+		}
+		defer response.Body.Close()
+		if response.StatusCode != 200 {
+			os.Exit(1)
+		}
+		return
+	}
 	dsn := env("DATABASE_URL", "postgres://stakraf:stakraf_dev@localhost:5432/stakraf?sslmode=disable")
 	db, e := sql.Open("pgx", dsn)
 	if e != nil {
@@ -558,6 +665,13 @@ func main() {
 	// With no parameters, pgx uses the simple protocol and supports the script.
 	if _, e = db.Exec(string(schema)); e != nil {
 		log.Fatalf("migration error: %v", e)
+	}
+	if len(os.Args) == 3 && os.Args[1] == "--reset-password" {
+		if err := resetPassword(context.Background(), db, os.Args[2], os.Stdin); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Password reset. Existing browser sessions were revoked. API keys are unchanged.")
+		return
 	}
 	origin := os.Getenv("APP_ORIGIN")
 	secure := strings.HasPrefix(origin, "https://")

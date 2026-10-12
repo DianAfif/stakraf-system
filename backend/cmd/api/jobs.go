@@ -45,8 +45,8 @@ func (a *API) nextJob(w http.ResponseWriter, r *http.Request, sid string) {
 	// Lock the server before claiming so concurrent agent polls cannot execute
 	// different jobs on the same host at the same time.
 	var server string
-	if err = tx.QueryRowContext(r.Context(), "SELECT id FROM servers WHERE id=$1 FOR UPDATE", sid).Scan(&server); err != nil {
-		fail(w, 500, "Job queue unavailable")
+	if err = tx.QueryRowContext(r.Context(), "SELECT id FROM servers WHERE id=$1 AND agent_token_hash=$2 FOR UPDATE", sid, hash(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))).Scan(&server); err != nil {
+		fail(w, 401, "Connector is no longer authorized")
 		return
 	}
 	var i, app, kind string

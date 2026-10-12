@@ -37,6 +37,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       POSTGRES_PASSWORD: stakraf-ci-isolated-db
+      STAKRAF_SIGNUP_MODE: open
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -54,6 +55,26 @@ jobs:
       - run: node scripts/smoke.mjs
         env:
           STAKRAF_SMOKE_EXPIRE_FIXTURE: 'true'
+      - name: Install real Linux connector and exercise Docker workloads
+        run: node scripts/connector-e2e.mjs
+        env:
+          STAKRAF_CONNECTOR_HOST_TEST: 'true'
+      - name: Validate hosted configuration
+        run: docker compose -f docker-compose.production.yml config --quiet
+        env:
+          STAKRAF_SETUP_TOKEN: isolated-ci-configuration-test-token
+      - name: Create and verify a database backup
+        run: bash scripts/backup.sh output/backups
+        env:
+          STAKRAF_COMPOSE_FILE: docker-compose.yml
+      - name: Restore the archive into a fresh test database
+        run: |
+          archive=$(rg --files --no-ignore output/backups -g '*.dump' | head -n 1)
+          docker compose exec -T postgres psql -U stakraf -d stakraf -v ON_ERROR_STOP=1 -c 'CREATE DATABASE stakraf_restore_test'
+          docker compose exec -T postgres pg_restore -U stakraf -d stakraf_restore_test --exit-on-error < "$archive"
+          original=$(docker compose exec -T postgres psql -U stakraf -d stakraf -Atc 'SELECT count(*) FROM users')
+          recovered=$(docker compose exec -T postgres psql -U stakraf -d stakraf_restore_test -Atc 'SELECT count(*) FROM users')
+          test "$original" = "$recovered"
       - name: Shut down isolated test stack
         if: always()
         run: docker compose down -v

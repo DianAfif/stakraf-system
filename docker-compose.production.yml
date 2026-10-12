@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stakraf}
+      POSTGRES_USER: ${POSTGRES_USER:-stakraf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes: [stakraf_pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    networks: [internal]
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-stakraf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stakraf}?sslmode=disable
+      APP_ORIGIN: https://${STAKRAF_DOMAIN:-console.stakraf.com}
+      STAKRAF_SIGNUP_MODE: ${STAKRAF_SIGNUP_MODE:-first_user}
+      STAKRAF_SETUP_TOKEN: ${STAKRAF_SETUP_TOKEN:?Generate STAKRAF_SETUP_TOKEN with scripts/setup.sh}
+      PORT: '8080'
+    networks: [internal]
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    networks: [internal]
+  gateway:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [web]
+    environment:
+      STAKRAF_DOMAIN: ${STAKRAF_DOMAIN:-console.stakraf.com}
+    ports: ['80:80', '443:443', '443:443/udp']
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - stakraf_tls_data:/data
+      - stakraf_tls_config:/config
+    networks: [internal]
+networks:
+  internal:
+volumes:
+  stakraf_pgdata:
+  stakraf_tls_data:
+  stakraf_tls_config:

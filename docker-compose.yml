@@ -22,12 +22,15 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-stakraf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stakraf}?sslmode=disable
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      STAKRAF_SIGNUP_MODE: ${STAKRAF_SIGNUP_MODE:-first_user}
+      STAKRAF_SETUP_TOKEN: ${STAKRAF_SETUP_TOKEN:-}
       PORT: '8080'
     networks: [internal]
   web:
     build: ./frontend
     restart: unless-stopped
-    depends_on: [api]
+    depends_on:
+      api: {condition: service_healthy}
     ports:
       - '${STAKRAF_WEB_BIND:-127.0.0.1}:3000:80'
     networks: [internal]

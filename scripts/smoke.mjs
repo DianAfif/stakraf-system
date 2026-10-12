@@ -39,7 +39,7 @@ const agent = await request('/api/agent/enroll', { method: 'POST', anonymous: tr
 await request('/api/agent/enroll', { method: 'POST', anonymous: true, body: enrollment, status: 401 });
 await request('/api/agent/heartbeat', {
   method: 'POST', token: agent.agent_token,
-  body: { hostname: 'ci-host', os: 'linux', cpu: 25, memory: 40, disk: 15, agent_version: 'smoke', netbird_status: 'unknown' },
+  body: { hostname: 'ci-host', os: 'linux', cpu: 25, memory: 40, disk: 15, agent_version: 'smoke', netbird_status: 'unknown', docker_ready: true, docker_version: 'test' },
 });
 assert.equal((await request(`/api/telemetry?server_id=${server.id}`))[0].cpu, 25);
 const app = await request('/api/apps', {

@@ -6,10 +6,15 @@ All `/api/` routes except `health`, `auth/signup`, `auth/login`, and `agent/enro
 | --- | --- | --- |
 | GET | `/api/health` | Database readiness and API status |
 | POST | `/api/auth/signup`, `/api/auth/login`, `/api/auth/logout` | Session auth |
+| GET | `/api/auth/options` | Available account setup mode; initial setup requires a code |
 | GET | `/api/auth/me` | Current user |
 | GET/POST | `/api/projects` | List/create projects |
 | GET/POST | `/api/servers` | List/create servers, issue enrollment token |
 | POST | `/api/servers/{id}/enrollment` | Reissue enrollment if not enrolled |
+| POST | `/api/servers/{id}/disconnect` | Revoke connector access and cancel queued work |
+| GET | `/api/connector/install.sh` | Linux/systemd installer |
+| GET | `/api/connector/stakraf-agent-linux-{amd64,arm64}` | Bundled binary; append `.sha256` for its checksum |
+| GET | `/api/agent/status` | Agent credential check |
 | GET/POST | `/api/apps` | List/create container applications |
 | POST | `/api/apps/{id}/actions` | Queue read-only `logs` job |
 | GET | `/api/jobs` | Query execution history |

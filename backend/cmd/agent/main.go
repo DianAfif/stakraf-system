@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -175,8 +176,9 @@ func (c *client) heartbeatLoop(ctx context.Context, host string, interval time.D
 	for {
 		ip, nb := netbird()
 		cpu, mem, disk := serverMetrics()
+		ready, version, detail, containers, complete := dockerInventory()
 		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		err := c.call(requestCtx, "POST", "/api/agent/heartbeat", map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "netbird_ip": ip, "netbird_status": nb, "cpu": cpu, "memory": mem, "disk": disk, "agent_version": "0.3.0"}, nil)
+		err := c.call(requestCtx, "POST", "/api/agent/heartbeat", map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "netbird_ip": ip, "netbird_status": nb, "cpu": cpu, "memory": mem, "disk": disk, "agent_version": "0.4.0", "docker_ready": ready, "docker_version": version, "docker_error": detail, "containers": containers, "inventory_complete": complete}, nil)
 		cancel()
 		if err != nil {
 			log.Printf("heartbeat: %v", err)
@@ -214,6 +216,14 @@ func (c *client) submitResult(ctx context.Context, j Job, ok bool, out string, d
 	return err
 }
 func main() {
+	enrollOnly := flag.Bool("enroll-only", false, "Enroll and store the connector credential, then exit")
+	checkOnly := flag.Bool("check", false, "Check console authentication and Docker readiness, then exit")
+	versionOnly := flag.Bool("version", false, "Print the connector version")
+	flag.Parse()
+	if *versionOnly {
+		fmt.Println("stakraf-agent 0.4.0")
+		return
+	}
 	base := strings.TrimRight(getenv("STAKRAF_API_URL", ""), "/")
 	if base == "" {
 		log.Fatal("Set STAKRAF_API_URL to the reachable HTTPS API URL")
@@ -250,6 +260,22 @@ func main() {
 		log.Printf("Enrolled server %s. Keep %s private", state.ServerID, stateFile)
 	}
 	c.token = state.Token
+	if *enrollOnly {
+		return
+	}
+	if *checkOnly {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := c.call(ctx, "GET", "/api/agent/status", nil, nil); err != nil {
+			log.Fatal("Console authentication: ", err)
+		}
+		ready, version, detail, _, _ := dockerInventory()
+		_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"console": base, "server_id": state.ServerID, "authenticated": true, "docker_ready": ready, "docker_version": version, "docker_error": detail})
+		if !ready {
+			os.Exit(1)
+		}
+		return
+	}
 	go c.heartbeatLoop(context.Background(), host, 10*time.Second)
 	tick := time.NewTicker(6 * time.Second)
 	defer tick.Stop()

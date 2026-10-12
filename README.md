@@ -13,6 +13,7 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 | Account and workspace | Account sign-up/sign-in, 7-day HttpOnly sessions, workspace settings |
 | Projects | Create projects, scope infrastructure to project owners |
 | Server management | Single-use expiring enrollment keys, per-host Go agents, heartbeat and status, NetBird observation |
+| Server connector | Bundled x86_64/ARM64 downloads, checksum verification, Linux/systemd installer, Docker readiness, container inventory, disconnect/reconnect |
 | Application deployment | Deploy existing container images, serialize host jobs, track execution windows, cancel queued work, retry eligible failures, and preserve attempt history |
 | Telemetry | CPU/memory/disk metrics captured by host agent, 60s PostgreSQL samples, 24h trend charts |
 | Incidents | Create, acknowledge, resolve, reopen, severity assignment and project ownership |
@@ -26,18 +27,21 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 
 ## Quick start
 
+For `console.stakraf.com`, or self-hosting under your own hostname, use `bash scripts/setup.sh --domain YOUR_DOMAIN`. See [installation, connection, backup, and recovery](docs/OPERATIONS.md). The production stack includes HTTPS, persistent storage, a first-account setup code, and registration closure after initial setup.
+
 Requirements: Docker Engine, Docker Compose plugin. For agent machines: Linux and Docker Engine; NetBird optional.
 
 ```bash
 cp .env.example .env
 # Set POSTGRES_PASSWORD to a strong, random value; configure APP_ORIGIN for deployment.
+# Set STAKRAF_SETUP_TOKEN to a random secret for first-account setup.
 docker compose up --build -d
 # Open http://localhost:3000
 ```
 
 Default bind address is `127.0.0.1`, intentionally not exposed publicly. For internet deployment configure a TLS terminating reverse proxy, use `APP_ORIGIN=https://your-domain` and use safe firewall rules. Consider a TLS proxy at the public endpoint and configure the Stakraf agent to use **only HTTPS**. Do not expose the database or API container publicly.
 
-Create an account (password >=12 characters), then create a project and register a server. The console returns a one-time enrollment token. On your **owned/authorized Linux server**:
+Create an account (password >=12 characters, with your setup code), then create a project and register a server. The connection guide installs the packaged connector without a Go compiler on the target host. Manual source installation remains available:
 
 ```bash
 cd backend
