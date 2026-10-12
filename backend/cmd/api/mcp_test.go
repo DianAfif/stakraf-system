@@ -46,3 +46,21 @@ func TestMCPTransportGuards(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPProposalSchemaValidation(t *testing.T) {
+	tool := mcpTools(true)[10]
+	props := tool["inputSchema"].(M)["properties"].(M)
+	for _, tc := range []struct {
+		field, value string
+		valid        bool
+	}{
+		{"kind", "restart", true}, {"kind", "shell", false}, {"kind", "", false},
+		{"reason", "Observed an unhealthy application", true}, {"reason", "short", false},
+		{"request_id", "unique-request-1", true}, {"request_id", "short", false},
+		{"app_id", strings.Repeat("a", 101), false},
+	} {
+		if mcpArgumentValid(props[tc.field].(M), tc.value) != tc.valid {
+			t.Fatalf("unexpected validation for %s", tc.field)
+		}
+	}
+}

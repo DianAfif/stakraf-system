@@ -137,7 +137,7 @@ func (a *API) mcp(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, k := range schema["required"].([]string) {
 			property := schema["properties"].(M)[k].(M)
-			if len(strings.TrimSpace(args.Arguments[k])) < property["minLength"].(int) || len(args.Arguments[k]) > property["maxLength"].(int) {
+			if !mcpArgumentValid(property, args.Arguments[k]) {
 				rpcError(-32602, "Required argument missing or too long")
 				return
 			}
@@ -192,6 +192,23 @@ func (a *API) mcp(w http.ResponseWriter, r *http.Request) {
 func mcpContent(v M, isError bool) M {
 	raw, _ := json.Marshal(v)
 	return M{"content": []M{{"type": "text", "text": string(raw)}}, "structuredContent": v, "isError": isError}
+}
+
+func mcpArgumentValid(property M, value string) bool {
+	min, max := 1, 500
+	if n, ok := property["minLength"].(int); ok {
+		min = n
+	}
+	if n, ok := property["maxLength"].(int); ok {
+		max = n
+	}
+	if len(strings.TrimSpace(value)) < min || len(value) > max {
+		return false
+	}
+	if choices, ok := property["enum"].([]string); ok {
+		return oneOf(value, choices...)
+	}
+	return true
 }
 
 func mcpQuery(name string) string {
