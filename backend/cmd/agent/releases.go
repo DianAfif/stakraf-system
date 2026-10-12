@@ -65,8 +65,8 @@ func runRelease(ctx context.Context, j Job) (bool, string) {
 		return rollback("Release execution timed out")
 	case <-time.After(2 * time.Second):
 	}
-	state, err = docker(ctx, "inspect", "--format", "{{.State.Running}}", name)
-	if err != nil || strings.TrimSpace(state) != "true" {
+	state, err = docker(ctx, "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", name)
+	if err != nil || strings.TrimSpace(state) != "running 0" {
 		logs, _ := docker(ctx, "logs", "--tail", "50", name)
 		return rollback("Replacement exited after launch: " + logs)
 	}

@@ -132,8 +132,8 @@ func runJob(j Job) (bool, string) {
 			return false, out + "\n" + e.Error()
 		}
 		time.Sleep(2 * time.Second)
-		state, e := docker(ctx, "inspect", "--format", "{{.State.Running}}", name)
-		if e != nil || strings.TrimSpace(state) != "true" {
+		state, e := docker(ctx, "inspect", "--format", "{{.State.Status}} {{.RestartCount}}", name)
+		if e != nil || strings.TrimSpace(state) != "running 0" {
 			logs, _ := docker(ctx, "logs", "--tail", "50", name)
 			return false, "Container exited after launch: " + logs
 		}

@@ -39,3 +39,25 @@ esac
 		t.Fatal("old container not restored")
 	}
 }
+func TestReleaseRejectsRestartLoop(t *testing.T) {
+	dir := t.TempDir()
+	script := `#!/bin/sh
+case "$1" in
+ container) exit 1;;
+ inspect) if [ "$3" = "{{.State.Running}}" ]; then echo true; else echo "restarting 3"; fi;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
+	t.Setenv("STAKRAF_BIND_IP", "127.0.0.1")
+	j := Job{ID: "loop", AppID: "app", Kind: "deploy"}
+	j.Payload.Image = "nginx@sha256:" + strings.Repeat("a", 64)
+	j.Payload.HostPort = 8088
+	j.Payload.ContainerPort = 8080
+	ok, out := runRelease(context.Background(), j)
+	if ok || !strings.Contains(out, "previous container restored") {
+		t.Fatalf("restart loop accepted: %v %s", ok, out)
+	}
+}
