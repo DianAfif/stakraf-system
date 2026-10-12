@@ -9,3 +9,5 @@ backend/api
 backend/agent
 backend/stakraf-agent
 frontend/.vite/
+.playwright-cli/
+output/playwright/

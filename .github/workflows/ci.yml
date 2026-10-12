@@ -13,10 +13,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
-      - run: go mod tidy
+      - run: go mod download
+      - run: go mod verify
       - run: go test ./...
       - run: go vet ./...
       - run: go build ./cmd/api ./cmd/agent
+      - run: CGO_ENABLED=0 GOOS=linux go build ./cmd/api ./cmd/agent
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -27,5 +29,29 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --no-audit --no-fund
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
       - run: npm run build
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: stakraf-ci-isolated-db
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: docker compose up --build -d
+      - name: Wait for database and API
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:3000/api/health; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs api web
+          exit 1
+      - run: node scripts/smoke.mjs
+      - name: Shut down isolated test stack
+        if: always()
+        run: docker compose down -v

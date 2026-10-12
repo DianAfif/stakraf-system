@@ -1,0 +1,7 @@
+.env
+*.local
+api
+agent
+stakraf-agent
+stakraf-agent-state.json
+coverage.out

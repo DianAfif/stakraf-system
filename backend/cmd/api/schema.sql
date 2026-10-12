@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  id TEXT PRIMARY KEY,
  server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
- kind TEXT NOT NULL CHECK(kind IN ('deploy','restart','logs')),
+ kind TEXT NOT NULL CHECK(kind IN ('deploy','restart','stop','start','logs')),
  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
  status TEXT NOT NULL DEFAULT 'queued',
  output TEXT NOT NULL DEFAULT '',
@@ -60,6 +60,8 @@ CREATE INDEX IF NOT EXISTS jobs_server_queue ON jobs(server_id, status,created_a
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 
 -- Stakraf operations modules. Schema is additive; existing installations retain data.
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
+ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check CHECK(kind IN ('deploy','restart','stop','start','logs'));
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS memory_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS disk_percent DOUBLE PRECISION NOT NULL DEFAULT 0;

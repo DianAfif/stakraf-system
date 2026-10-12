@@ -588,15 +588,14 @@ func main() {
 		}
 		time.Sleep(time.Second)
 	}
-	schema, _ := sqlFiles.ReadFile("schema.sql")
-	for _, statement := range strings.Split(string(schema), ";") {
-		statement = strings.TrimSpace(statement)
-		if statement == "" {
-			continue
-		}
-		if _, e = db.Exec(statement); e != nil {
-			log.Fatalf("migration error: %v", e)
-		}
+	schema, e := sqlFiles.ReadFile("schema.sql")
+	if e != nil {
+		log.Fatalf("read schema: %v", e)
+	}
+	// Send the complete script so PostgreSQL parses comments and quoted SQL.
+	// With no parameters, pgx uses the simple protocol and supports the script.
+	if _, e = db.Exec(string(schema)); e != nil {
+		log.Fatalf("migration error: %v", e)
 	}
 	origin := os.Getenv("APP_ORIGIN")
 	secure := strings.HasPrefix(origin, "https://")

@@ -19,8 +19,8 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 | Change control | Request app start/stop/restart, explicit approve/reject, queue only after approval |
 | Governance | Append-only audit events for major user actions, API key issuance and revocation |
 | External AI | Read-only JSON-RPC MCP HTTP endpoint (projects, infrastructure, apps, incidents, operations) via API keys |
-| UI | Responsive dark command-center console with keyboard quick switch (Ctrl/Cmd+K) |
-| CI/CD | GitHub Actions: Go tests/vet/build and React production build |
+| UI | Responsive white and graphite operations console with keyboard quick switch (Ctrl/Cmd+K) |
+| CI/CD | GitHub Actions: Go tests/vet/build, React production build, Docker/PostgreSQL control-plane smoke checks |
 
 **Not completed:** Cloud-provider purchasing/provisioning, managed NetBird tenant provisioning, public HTTPS/ACME automation, source-to-image CI, multi-user RBAC/organizations, backups/rollback orchestration, automatic repair, SMS/email integration, billing, and production-grade security hardening. The platform is a wide **operational foundation**, not a production-complete managed service. Do not use it to operate critical infrastructure until security and recovery processes are independently reviewed.
 
@@ -50,9 +50,11 @@ export STAKRAF_STATE_FILE='/var/lib/stakraf/agent.json'
 
 The Go agent needs Docker permissions. **Docker socket access is highly privileged**; run only on explicitly authorized hosts and configure a scoped service identity, host restrictions and security monitoring. Its state file contains the agent credential; permissions are set to `0600`. The agent polls a restricted set of Docker actions; it never executes arbitrary AI-supplied shell commands. Initial deployments bind to `127.0.0.1` on the host by default. For a public app, configure a vetted reverse proxy explicitly rather than exposing it accidentally.
 
-The backend uses Go `pgx` and `bcrypt`, and the UI uses React and Vite. CI resolves dependencies in GitHub Actions. No secrets are included in the repository.
+The backend uses Go `pgx` and `bcrypt`, and the UI uses React and Vite. Go checksums and the npm lockfile keep local, CI, and Docker dependency installs reproducible. No secrets are included in the repository.
 
 ## Integration architecture
+
+To verify an isolated running test stack, run `node scripts/smoke.mjs` (Node 22+). Override `STAKRAF_SMOKE_URL` when needed. This creates test accounts and resources and checks authentication, single-use enrollment, telemetry, approval gates, incidents, settings, audit records, and MCP key revocation. It does not execute Docker jobs on a target host. CI uses a disposable database for this check.
 
 ```
        Browser           ChatGPT / Codex / external MCP clients

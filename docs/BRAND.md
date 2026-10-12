@@ -14,8 +14,8 @@
 
 **Typography:** Plus Jakarta Sans for interface and IBM Plex Mono for technical labels.
 
-**Palette:** Almost-black `#0a0e13`, raised panels `#111820`, divider `#26313a`, signal green `#c7f582`, muted teal `#8796a2`, incident red `#fc8c81`.
+**Palette:** White `#ffffff`, canvas `#f7f7f8`, graphite `#292a30`, divider `#dedee3`, neutral gray `#62636c`, incident red `#b42332`. Green is not part of the brand palette.
 
-**Inspiration:** Palantir operational dashboard design patterns (data-first, action-centered) and UnoRouter's dark developer-first positioning. Original UI, not copied assets.
+**Inspiration:** Data-rich operational dashboards with restrained typography, clear tables, and deliberate action placement. Original UI with white and graphite foundations.
 
 **Trademark note:** Evaluate STAKRAF for potential confusion with TAKRAF, StackRaft, and Statkraft before commercialization; not legal clearance.
