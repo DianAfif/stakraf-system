@@ -132,10 +132,43 @@ const incident = await request('/api/incidents', {
   method: 'POST', status: 201,
   body: { project_id: project.id, server_id: server.id, title: 'CI incident check', severity: 'medium', description: 'Test record' },
 });
+const anotherProject=await request('/api/projects',{method:'POST',status:201,body:{name:'Incident isolation test'}});
+await request('/api/incidents',{method:'POST',status:400,body:{project_id:anotherProject.id,app_id:app.id,title:'Wrong project target',severity:'high'}});
+const linkedIncident=await request('/api/incidents',{method:'POST',status:201,body:{project_id:project.id,job_id:failed.id,title:'Linked execution investigation',severity:'medium'}});
+const linkedDetail=await request('/api/incidents/'+linkedIncident.id);
+assert.equal(linkedDetail.app_id,retryApp.id);
+assert.equal(linkedDetail.server_id,server.id);
 for (const status of ['acknowledged', 'resolved', 'open']) {
-  await request(`/api/incidents/${incident.id}`, { method: 'PATCH', body: { status } });
+  const current=await request(`/api/incidents/${incident.id}`);
+  await request(`/api/incidents/${incident.id}`, { method: 'PATCH', body: { status,version:current.version,resolution:status==='resolved'?'Service recovered during smoke verification.':current.resolution,note:status==='open'?'Reopened for test coverage.':'' } });
   assert.equal((await request('/api/incidents')).find(item => item.id === incident.id).status, status);
 }
+const incidentPath=`/api/incidents/${incident.id}`;
+await request(incidentPath+'/notes',{method:'POST',status:201,body:{body:'Investigated logs; no credentials included.'}});
+let incidentDetail=await request(incidentPath);
+assert.ok(incidentDetail.events.some(e=>e.kind==='note'));
+assert.ok(incidentDetail.acknowledged_at);
+const versionBefore=incidentDetail.version;
+await request(incidentPath,{method:'PATCH',body:{version:versionBefore,status:'investigating',responder:'CI operator',impact:'Test service degraded',root_cause:'Fault injected for verification',follow_up:'Add a regression test.'}});
+await request(incidentPath,{method:'PATCH',status:409,body:{version:versionBefore,severity:'critical'}});
+incidentDetail=await request(incidentPath);
+await request(incidentPath,{method:'PATCH',status:400,body:{version:incidentDetail.version,status:'resolved'}});
+await request(incidentPath,{method:'PATCH',body:{version:incidentDetail.version,status:'monitoring'}});
+incidentDetail=await request(incidentPath);
+await request(incidentPath,{method:'PATCH',body:{version:incidentDetail.version,status:'resolved',resolution:'Verified the restored service responds.'}});
+incidentDetail=await request(incidentPath);
+assert.ok(incidentDetail.resolved_at);
+assert.equal(incidentDetail.responder,'CI operator');
+await request(incidentPath,{method:'PATCH',status:400,body:{version:incidentDetail.version,status:'open'}});
+assert.ok((await request('/api/incidents')).some(i=>i.source==='job_failure'&&i.app_id===retryApp.id),'Failed deploy creates linked incident');
+const automatic=(await request('/api/incidents')).find(i=>i.source==='job_failure'&&i.app_id===retryApp.id);
+const extraRelease=await request(`/api/apps/${retryApp.id}/releases`,{method:'POST',status:201,body:{image:'nginx@sha256:'+'d'.repeat(64),request_id:randomUUID(),note:'Repeated deployment failure fixture'}});
+const extraDecision=await request(`/api/apps/${retryApp.id}/releases/${extraRelease.id}/decision`,{method:'POST',body:{decision:'approve'}});
+assert.equal((await poll()).job.id,extraDecision.job_id);
+await complete(extraDecision.job_id,false,'Repeated test deployment failure');
+await complete(extraDecision.job_id,false,'Repeated test deployment failure');
+assert.equal((await request('/api/incidents')).filter(i=>i.source==='job_failure'&&i.app_id===retryApp.id&&i.status!=='resolved').length,1);
+assert.equal((await request('/api/incidents/'+automatic.id)).events.filter(e=>e.kind==='deployment_failed').length,2,'Failure retries do not duplicate timeline events');
 await request('/api/settings', { method: 'PATCH', body: { name: 'CI workspace', timezone: 'UTC' } });
 assert.equal((await request('/api/settings')).name, 'CI workspace');
 assert.equal((await request('/api/overview')).online_servers, 1);
@@ -147,7 +180,7 @@ const call = await request('/mcp', {
   method: 'POST', token: key.key,
   body: { ...mcp, method: 'tools/call', params: { name: 'list_projects', arguments: {} } },
 });
-assert.equal(call.result.structuredContent.data[0].id, project.id);
+assert.ok(call.result.structuredContent.data.some(p=>p.id===project.id));
 await request('/api/projects', { token: key.key, status: 401 });
 await request('/api/keys', { method: 'POST', token: key.key, body: {label:'Escalation'}, status: 401 });
 const rpc = (token, name, args = {}) => request('/mcp', { method: 'POST', token, body: {...mcp, method:'tools/call', params:{name, arguments:args}} });
@@ -205,6 +238,9 @@ await request('/api/pipeline/releases',{method:'POST',token:pipeline.key,body:re
 await request(`/api/apps/${app.id}/pipeline-key`,{method:'DELETE'});
 await request('/api/pipeline/releases',{method:'POST',token:rotated.key,body:releaseInput,status:401});
 await request('/api/auth/signup',{method:'POST',body:{email:`release-other-${randomUUID()}@example.test`,password:randomUUID()}});
+await request(incidentPath,{status:404});
+await request(incidentPath+'/notes',{method:'POST',status:404,body:{body:'Unauthorized investigation note'}});
+await request(incidentPath,{method:'PATCH',status:404,body:{version:incidentDetail.version,status:'open',note:'Unauthorized reopening'}});
 await request(`/api/apps/${app.id}/releases`,{status:404});
 await request(`/api/apps/${app.id}/pipeline-key`,{method:'POST',status:404});
 cookie=otherCookie;

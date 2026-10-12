@@ -34,6 +34,8 @@ All `/api/` routes except `health`, `auth/signup`, `auth/login`, and `agent/enro
 
 ## MCP example
 
+The expanded incident routes, required update version, resolution/reopening validation and automation scope are documented in [Incident management](INCIDENTS.md).
+
 Application release and application-scoped CI submission routes are described in [Applications & CI/CD](APPLICATIONS-CICD.md).
 
 Use an `mcp_read` key for inspection or `mcp_propose` for pending-only proposals. Create it via `POST /api/keys` with `{"label":"AI client","scope":"mcp_read"}`. AI keys do not authenticate REST administration routes. Existing keys default to full-account `api` scope; do not share those with AI. See [connection instructions and tool contracts](AI-MCP.md).

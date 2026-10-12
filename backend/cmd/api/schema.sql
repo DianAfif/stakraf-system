@@ -96,6 +96,29 @@ CREATE TABLE IF NOT EXISTS incidents (
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS incident_project ON incidents(project_id,status,created_at DESC);
+ALTER TABLE incidents DROP CONSTRAINT IF EXISTS incidents_status_check;
+ALTER TABLE incidents ADD CONSTRAINT incidents_status_check CHECK(status IN ('open','acknowledged','investigating','monitoring','resolved'));
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS app_id TEXT REFERENCES apps(id) ON DELETE SET NULL;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS responder TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS impact TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS root_cause TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS resolution TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS follow_up TEXT NOT NULL DEFAULT '';
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS acknowledged_at TIMESTAMPTZ;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS version INTEGER NOT NULL DEFAULT 1;
+CREATE UNIQUE INDEX IF NOT EXISTS incidents_active_app_failure ON incidents(app_id) WHERE source='job_failure' AND status!='resolved';
+CREATE TABLE IF NOT EXISTS incident_events (
+ id TEXT PRIMARY KEY,
+ incident_id TEXT NOT NULL REFERENCES incidents(id) ON DELETE CASCADE,
+ actor_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+ kind TEXT NOT NULL,
+ body TEXT NOT NULL,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS incident_events_time ON incident_events(incident_id,created_at,id);
 CREATE TABLE IF NOT EXISTS change_requests (
  id TEXT PRIMARY KEY,
  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,

@@ -65,6 +65,7 @@ try{
   assert.equal((await fetch('http://127.0.0.1:18088')).status,200,'Prior application responds after failed replacement');
   assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
   const logJob=await request(`/api/apps/${app.id}/actions`,'POST',{kind:'logs'},201);
+  assert.ok((await request('/api/incidents')).some(i=>i.source==='job_failure'&&i.app_id===app.id&&i.job_id===brokenDecision.job_id),'Failed replacement creates a linked incident even when the old app is restored');
   await waitFor('real logs',()=>jobFinished(logJob.job_id));
   assert.ok((await request('/api/jobs')).find(item=>item.id===logJob.job_id).output.length>0);
   for(const kind of ['stop','start','restart']){

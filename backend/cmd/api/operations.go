@@ -47,8 +47,8 @@ func (a *API) operations(w http.ResponseWriter, r *http.Request, u string) bool 
 		a.listIncidents(w, r, u)
 	case p == "/api/incidents" && r.Method == "POST":
 		a.createIncident(w, r, u)
-	case strings.HasPrefix(p, "/api/incidents/") && r.Method == "PATCH":
-		a.updateIncident(w, r, u)
+	case strings.HasPrefix(p, "/api/incidents/"):
+		a.incidentRoute(w, r, u)
 	case p == "/api/changes" && r.Method == "GET":
 		a.listChanges(w, r, u)
 	case p == "/api/changes" && r.Method == "POST":
@@ -109,80 +109,6 @@ func (a *API) telemetry(w http.ResponseWriter, r *http.Request, u string) {
 		}
 	}
 	jsonOut(w, 200, data)
-}
-func (a *API) listIncidents(w http.ResponseWriter, r *http.Request, u string) {
-	rows, e := a.db.QueryContext(r.Context(), `SELECT i.id,i.project_id,p.name,coalesce(i.server_id,''),i.title,i.description,i.severity,i.status,i.created_at,i.updated_at FROM incidents i JOIN projects p ON i.project_id=p.id WHERE p.owner_id=$1 ORDER BY CASE WHEN i.status='resolved' THEN 1 ELSE 0 END,i.created_at DESC LIMIT 300`, u)
-	if e != nil {
-		fail(w, 500, "Could not load incidents")
-		return
-	}
-	defer rows.Close()
-	out := []M{}
-	for rows.Next() {
-		var id, pr, pn, s, title, desc, sev, status string
-		var cr, up time.Time
-		if rows.Scan(&id, &pr, &pn, &s, &title, &desc, &sev, &status, &cr, &up) == nil {
-			out = append(out, M{"id": id, "project_id": pr, "project_name": pn, "server_id": s, "title": title, "description": desc, "severity": sev, "status": status, "created_at": cr, "updated_at": up})
-		}
-	}
-	jsonOut(w, 200, out)
-}
-func (a *API) createIncident(w http.ResponseWriter, r *http.Request, u string) {
-	var x struct {
-		ProjectID   string `json:"project_id"`
-		ServerID    string `json:"server_id"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Severity    string `json:"severity"`
-	}
-	if read(r, &x) != nil {
-		fail(w, 400, "Invalid incident")
-		return
-	}
-	x.Title = strings.TrimSpace(x.Title)
-	if !a.ownsProject(r.Context(), u, x.ProjectID) || len(x.Title) < 4 || len(x.Title) > 140 || len(x.Description) > 3000 || !oneOf(x.Severity, "critical", "high", "medium", "low") {
-		fail(w, 400, "Invalid project, title, or severity")
-		return
-	}
-	var sid any
-	if x.ServerID != "" {
-		if !a.ownsServer(r.Context(), u, x.ServerID) {
-			fail(w, 400, "Invalid server")
-			return
-		}
-		var belongs bool
-		if a.db.QueryRowContext(r.Context(), "SELECT project_id=$1 FROM servers WHERE id=$2", x.ProjectID, x.ServerID).Scan(&belongs) != nil || !belongs {
-			fail(w, 400, "Server must belong to incident project")
-			return
-		}
-		sid = x.ServerID
-	}
-	i := id()
-	_, e := a.db.ExecContext(r.Context(), `INSERT INTO incidents(id,project_id,server_id,title,description,severity) VALUES($1,$2,$3,$4,$5,$6)`, i, x.ProjectID, sid, x.Title, x.Description, x.Severity)
-	if e != nil {
-		fail(w, 500, "Could not record incident")
-		return
-	}
-	a.audit(r.Context(), u, x.ProjectID, "incident.created", "incident", i, x.Title)
-	jsonOut(w, 201, M{"id": i})
-}
-func (a *API) updateIncident(w http.ResponseWriter, r *http.Request, u string) {
-	iid := pathID(r.URL.Path, "/api/incidents/")
-	var status struct {
-		Status string `json:"status"`
-	}
-	if read(r, &status) != nil || !oneOf(status.Status, "open", "acknowledged", "resolved") {
-		fail(w, 400, "Invalid incident status")
-		return
-	}
-	var pid string
-	e := a.db.QueryRowContext(r.Context(), `UPDATE incidents i SET status=$1,updated_at=now() FROM projects p WHERE i.id=$2 AND p.id=i.project_id AND p.owner_id=$3 RETURNING i.project_id`, status.Status, iid, u).Scan(&pid)
-	if e != nil {
-		fail(w, 404, "Incident not found")
-		return
-	}
-	a.audit(r.Context(), u, pid, "incident."+status.Status, "incident", iid, "")
-	jsonOut(w, 200, M{"ok": true})
 }
 func oneOf(v string, vs ...string) bool {
 	for _, s := range vs {

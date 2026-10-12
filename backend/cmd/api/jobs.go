@@ -135,6 +135,12 @@ func (a *API) completeJob(w http.ResponseWriter, r *http.Request, sid string) {
 			return
 		}
 	}
+	if kind == "deploy" && !x.Success {
+		if err = a.failedDeploymentIncident(r, tx, app, i); err != nil {
+			fail(w, 500, "Could not record deployment incident")
+			return
+		}
+	}
 	if tx.Commit() != nil {
 		fail(w, 500, "Could not commit result")
 		return
