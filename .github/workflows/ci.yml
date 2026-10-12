@@ -13,10 +13,12 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: backend/go.mod
-      - run: go mod tidy
-      - run: go test ./...
+      - run: go mod download
+      - run: go mod verify
+      - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/api ./cmd/agent
+      - run: CGO_ENABLED=0 GOOS=linux go build ./cmd/api ./cmd/agent
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -27,5 +29,52 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: npm install --no-audit --no-fund
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci --no-audit --no-fund
       - run: npm run build
+  integration:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: stakraf-ci-isolated-db
+      STAKRAF_SIGNUP_MODE: open
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: docker compose up --build -d
+      - name: Wait for database and API
+        run: |
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://localhost:3000/api/health; then exit 0; fi
+            sleep 2
+          done
+          docker compose logs api web
+          exit 1
+      - run: node scripts/smoke.mjs
+        env:
+          STAKRAF_SMOKE_EXPIRE_FIXTURE: 'true'
+      - name: Install real Linux connector and exercise Docker workloads
+        run: node scripts/connector-e2e.mjs
+        env:
+          STAKRAF_CONNECTOR_HOST_TEST: 'true'
+      - name: Validate hosted configuration
+        run: docker compose -f docker-compose.production.yml config --quiet
+        env:
+          STAKRAF_SETUP_TOKEN: isolated-ci-configuration-test-token
+      - name: Create and verify a database backup
+        run: bash scripts/backup.sh output/backups
+        env:
+          STAKRAF_COMPOSE_FILE: docker-compose.yml
+      - name: Restore the archive into a fresh test database
+        run: |
+          archive=$(rg --files --no-ignore output/backups -g '*.dump' | head -n 1)
+          docker compose exec -T postgres psql -U stakraf -d stakraf -v ON_ERROR_STOP=1 -c 'CREATE DATABASE stakraf_restore_test'
+          docker compose exec -T postgres pg_restore -U stakraf -d stakraf_restore_test --exit-on-error < "$archive"
+          original=$(docker compose exec -T postgres psql -U stakraf -d stakraf -Atc 'SELECT count(*) FROM users')
+          recovered=$(docker compose exec -T postgres psql -U stakraf -d stakraf_restore_test -Atc 'SELECT count(*) FROM users')
+          test "$original" = "$recovered"
+      - name: Shut down isolated test stack
+        if: always()
+        run: docker compose down -v

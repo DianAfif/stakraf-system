@@ -48,7 +48,7 @@ CREATE TABLE IF NOT EXISTS jobs (
  id TEXT PRIMARY KEY,
  server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
  app_id TEXT NOT NULL REFERENCES apps(id) ON DELETE CASCADE,
- kind TEXT NOT NULL CHECK(kind IN ('deploy','restart','logs')),
+ kind TEXT NOT NULL CHECK(kind IN ('deploy','restart','stop','start','logs')),
  payload JSONB NOT NULL DEFAULT '{}'::jsonb,
  status TEXT NOT NULL DEFAULT 'queued',
  output TEXT NOT NULL DEFAULT '',
@@ -60,10 +60,21 @@ CREATE INDEX IF NOT EXISTS jobs_server_queue ON jobs(server_id, status,created_a
 CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 
 -- Stakraf operations modules. Schema is additive; existing installations retain data.
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
+ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check CHECK(kind IN ('deploy','restart','stop','start','logs'));
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS retry_of TEXT REFERENCES jobs(id);
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_retry_once ON jobs(retry_of) WHERE retry_of IS NOT NULL;
+CREATE INDEX IF NOT EXISTS jobs_execution_window ON jobs(lease_expires_at) WHERE status='running';
+-- Older running jobs get a bounded grace period during upgrade.
+UPDATE jobs SET lease_expires_at=now()+interval '5 minutes' WHERE status='running' AND lease_expires_at IS NULL;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS memory_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS disk_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS agent_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS docker_ready BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS docker_version TEXT NOT NULL DEFAULT '';
+ALTER TABLE servers ADD COLUMN IF NOT EXISTS docker_error TEXT NOT NULL DEFAULT '';
 CREATE TABLE IF NOT EXISTS telemetry (
  server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
  recorded_at TIMESTAMPTZ NOT NULL DEFAULT now(),
