@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 
 const base = process.env.STAKRAF_SMOKE_URL || 'http://localhost:3000';
-const origin = new URL(base).origin;
+const origin = process.env.STAKRAF_SMOKE_ORIGIN || new URL(base).origin;
 let cookie = '';
 async function request(path, { method = 'GET', body, token, anonymous = false, status = 200 } = {}) {
   const response = await fetch(base + path, {
@@ -140,14 +140,42 @@ await request('/api/settings', { method: 'PATCH', body: { name: 'CI workspace', 
 assert.equal((await request('/api/settings')).name, 'CI workspace');
 assert.equal((await request('/api/overview')).online_servers, 1);
 assert.ok((await request('/api/audit')).some(event => event.event_type === 'change.approved'));
-const key = await request('/api/keys', { method: 'POST', status: 201, body: { label: 'CI MCP key' } });
+const key = await request('/api/keys', { method: 'POST', status: 201, body: { label: 'CI MCP key', scope: 'mcp_read' } });
 const mcp = { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} };
-assert.equal((await request('/mcp', { method: 'POST', token: key.key, body: mcp })).result.tools.length, 5);
+assert.equal((await request('/mcp', { method: 'POST', token: key.key, body: mcp })).result.tools.length, 10);
 const call = await request('/mcp', {
   method: 'POST', token: key.key,
   body: { ...mcp, method: 'tools/call', params: { name: 'list_projects', arguments: {} } },
 });
-assert.equal(JSON.parse(call.result.content[0].text)[0].id, project.id);
+assert.equal(call.result.structuredContent.data[0].id, project.id);
+await request('/api/projects', { token: key.key, status: 401 });
+await request('/api/keys', { method: 'POST', token: key.key, body: {label:'Escalation'}, status: 401 });
+const rpc = (token, name, args = {}) => request('/mcp', { method: 'POST', token, body: {...mcp, method:'tools/call', params:{name, arguments:args}} });
+for (const name of ['list_servers','list_applications','list_incidents','get_operations_summary','list_jobs','list_changes','list_audit_events']) {
+ assert.equal((await rpc(key.key,name)).result.isError,false,name);
+}
+assert.equal((await rpc(key.key,'get_server_telemetry',{server_id:server.id})).result.structuredContent.data[0].cpu,25);
+assert.equal((await rpc(key.key,'get_job',{job_id:failed.id})).result.structuredContent.data[0].id,failed.id);
+assert.equal((await rpc(key.key,'list_projects',{surprise:'argument'})).error.code,-32602);
+assert.equal((await rpc(key.key,'propose_change',{})).error.code,-32602);
+const proposeKey = await request('/api/keys', { method:'POST',status:201,body:{label:'CI proposal key',scope:'mcp_propose'} });
+const proposalArgs={app_id:app.id,kind:'restart',reason:'AI recommends investigating this failed application.',request_id:randomUUID()};
+const jobsBefore=(await request('/api/jobs')).length;
+const proposal=(await rpc(proposeKey.key,'propose_change',proposalArgs)).result.structuredContent;
+assert.equal(proposal.status,'pending');
+assert.equal(proposal.executed,false);
+assert.equal((await rpc(proposeKey.key,'propose_change',proposalArgs)).result.structuredContent.id,proposal.id);
+assert.equal((await rpc(proposeKey.key,'propose_change',{...proposalArgs,kind:'stop'})).result.isError,true);
+await request(`/api/changes/${proposal.id}/decision`, {method:'POST',token:proposeKey.key,body:{decision:'approve'},status:401});
+assert.equal((await request('/api/jobs')).length,jobsBefore,'MCP proposal must not queue execution');
+const otherCookie=cookie;
+await request('/api/auth/signup',{method:'POST',body:{email:`mcp-other-${randomUUID()}@example.test`,password:randomUUID()}});
+const otherKey=await request('/api/keys',{method:'POST',status:201,body:{label:'Other AI',scope:'mcp_propose'}});
+assert.equal((await rpc(otherKey.key,'get_job',{job_id:failed.id})).result.structuredContent.data.length,0);
+assert.equal((await rpc(otherKey.key,'get_server_telemetry',{server_id:server.id})).result.structuredContent.data.length,0);
+assert.equal((await rpc(otherKey.key,'propose_change',{...proposalArgs,request_id:randomUUID()})).result.isError,true);
+cookie=otherCookie;
+await request(`/api/keys/${proposeKey.id}`,{method:'DELETE'});
 await request(`/api/keys/${key.id}`, { method: 'DELETE' });
 await request('/mcp', { method: 'POST', token: key.key, body: mcp, status: 401 });
 await request('/api/auth/logout', { method: 'POST' });

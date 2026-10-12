@@ -19,7 +19,7 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 | Incidents | Create, acknowledge, resolve, reopen, severity assignment and project ownership |
 | Change control | Request app start/stop/restart, explicit approve/reject, queue only after approval |
 | Governance | Append-only audit events for major user actions, API key issuance and revocation |
-| External AI | Read-only JSON-RPC MCP HTTP endpoint (projects, infrastructure, apps, incidents, operations) via API keys |
+| External AI | 10 inspection tools, optional approval-only proposals, MCP-only AI keys, connection test and desktop adapter. [Setup and limitations](docs/AI-MCP.md) |
 | UI | White and graphite operations console, filtered execution history, job timelines/output, recovery controls, and keyboard quick switch (Ctrl/Cmd+K) |
 | CI/CD | GitHub Actions: Go tests/vet/build, React production build, Docker/PostgreSQL control-plane smoke checks |
 

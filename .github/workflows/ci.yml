@@ -33,6 +33,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci --no-audit --no-fund
       - run: npm run build
+      - run: node --test ../scripts/mcp-stdio.test.mjs
   integration:
     runs-on: ubuntu-latest
     env:
@@ -55,6 +56,11 @@ jobs:
       - run: node scripts/smoke.mjs
         env:
           STAKRAF_SMOKE_EXPIRE_FIXTURE: 'true'
+      - name: Verify official MCP client over HTTP and stdio
+        run: |
+          mcp_sdk_dir=$(mktemp -d)
+          npm install --prefix "$mcp_sdk_dir" @modelcontextprotocol/sdk@1.32.1 --no-audit --no-fund
+          STAKRAF_MCP_SDK_PATH="$mcp_sdk_dir/node_modules/@modelcontextprotocol/sdk" node scripts/mcp-client-e2e.mjs
       - name: Install real Linux connector and exercise Docker workloads
         run: node scripts/connector-e2e.mjs
         env:
