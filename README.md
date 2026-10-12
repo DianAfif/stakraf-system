@@ -23,7 +23,7 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 | UI | White and graphite operations console, filtered execution history, job timelines/output, recovery controls, and keyboard quick switch (Ctrl/Cmd+K) |
 | CI/CD | GitHub Actions: Go tests/vet/build, React production build, Docker/PostgreSQL control-plane smoke checks |
 
-**Not completed:** Cloud-provider purchasing/provisioning, managed NetBird tenant provisioning, public HTTPS/ACME automation, source-to-image CI, multi-user RBAC/organizations, backups/rollback orchestration, automatic repair, SMS/email integration, billing, and production-grade security hardening. The platform is a wide **operational foundation**, not a production-complete managed service. Do not use it to operate critical infrastructure until security and recovery processes are independently reviewed.
+**Deployment profile:** Independent operator-owned workspaces on existing Linux servers, with an installable connector, HTTPS console, execution controls, backups, and host-admin account recovery. Managed cloud/NetBird provisioning, organizations/shared-team RBAC, source builds, billing, email/MFA, automatic repair, and automatic workload HTTPS/rollback are outside this package. This is not represented as a complete managed SaaS service.
 
 ## Quick start
 

@@ -59,6 +59,10 @@ jobs:
         run: node scripts/connector-e2e.mjs
         env:
           STAKRAF_CONNECTOR_HOST_TEST: 'true'
+      - name: Verify first-account setup protection
+        run: node scripts/bootstrap-e2e.mjs
+        env:
+          STAKRAF_CONNECTOR_HOST_TEST: 'true'
       - name: Validate hosted configuration
         run: docker compose -f docker-compose.production.yml config --quiet
         env:
@@ -69,7 +73,8 @@ jobs:
           STAKRAF_COMPOSE_FILE: docker-compose.yml
       - name: Restore the archive into a fresh test database
         run: |
-          archive=$(rg --files --no-ignore output/backups -g '*.dump' | head -n 1)
+          archive=$(find output/backups -type f -name '*.dump' -print -quit)
+          test -n "$archive"
           docker compose exec -T postgres psql -U stakraf -d stakraf -v ON_ERROR_STOP=1 -c 'CREATE DATABASE stakraf_restore_test'
           docker compose exec -T postgres pg_restore -U stakraf -d stakraf_restore_test --exit-on-error < "$archive"
           original=$(docker compose exec -T postgres psql -U stakraf -d stakraf -Atc 'SELECT count(*) FROM users')

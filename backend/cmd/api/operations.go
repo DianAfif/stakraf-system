@@ -89,7 +89,7 @@ func (a *API) telemetry(w http.ResponseWriter, r *http.Request, u string) {
 		fail(w, 404, "Server not found")
 		return
 	}
-	rows, e := a.db.QueryContext(r.Context(), `SELECT recorded_at,cpu,memory,disk FROM (SELECT recorded_at,cpu,memory,disk FROM telemetry WHERE server_id=$1 AND recorded_at>now()-interval '1 day' ORDER BY recorded_at DESC LIMIT 144) t ORDER BY recorded_at`, sid)
+	rows, e := a.db.QueryContext(r.Context(), `SELECT recorded_at,cpu,memory,disk FROM (SELECT recorded_at,cpu,memory,disk FROM telemetry WHERE server_id=$1 AND recorded_at>now()-interval '1 day' ORDER BY recorded_at DESC LIMIT 1440) t ORDER BY recorded_at`, sid)
 	if e != nil {
 		fail(w, 500, "Telemetry unavailable")
 		return

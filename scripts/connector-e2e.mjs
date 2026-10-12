@@ -14,6 +14,7 @@ let cookie='';
 const containers=[];
 const folder=mkdtempSync(join(tmpdir(),'stakraf-connector-test-'));
 const rootToken=join(folder,'root-enrollment-token');
+const credentials={email:`connector-${randomUUID()}@example.test`,password:randomUUID()};
 async function request(path,method='GET',body,status=200){
   const response=await fetch(base+path,{method,headers:{'Content-Type':'application/json',Origin:new URL(base).origin,...(cookie?{Cookie:cookie}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
   assert.equal(response.status,status,`${method} ${path} returned ${response.status}`);
@@ -27,7 +28,7 @@ async function waitFor(label,check,timeout=180000){
 }
 const jobFinished=async(id)=>{const job=(await request('/api/jobs')).find(item=>item.id===id);if(job?.status==='failed')throw new Error(`Host job ${id} failed: ${job.output}`);return job?.status==='success'};
 try{
-  await request('/api/auth/signup','POST',{email:`connector-${randomUUID()}@example.test`,password:randomUUID()});
+  await request('/api/auth/signup','POST',credentials);
   const project=await request('/api/projects','POST',{name:'Real connector test'},201);
   const server=await request('/api/servers','POST',{project_id:project.id,name:'systemd-ci-host'},201);
   const script=await fetch(base+'/api/connector/install.sh');assert.equal(script.status,200);
@@ -73,6 +74,22 @@ try{
   assert.equal((await request('/api/servers')).find(item=>item.id===server.id).enrolled,false);
   const state=JSON.parse(before);
   const revoked=await fetch(base+'/api/agent/status',{headers:{Authorization:`Bearer ${state.agent_token}`}});assert.equal(revoked.status,401);
+  const newEnrollment=await request(`/api/servers/${server.id}/enrollment`,'POST',{});
+  assert.equal(newEnrollment.reconnect,true);
+  const newTokenFile=join(folder,'reconnect-token');writeFileSync(newTokenFile,newEnrollment.enrollment_token,{mode:0o600});
+  execFileSync('sudo',['install','-o','root','-g','root','-m','0600',newTokenFile,rootToken]);
+  execFileSync('sudo',['bash',installer,'--url',base,'--allow-http','--reconnect','--token-file',rootToken],{stdio:'pipe',timeout:120000});
+  await waitFor('reconnected host',async()=>{const host=(await request('/api/servers')).find(item=>item.id===server.id);return host?.online&&host?.docker_ready},60000);
+  const renewed=JSON.parse(execFileSync('sudo',['cat','/var/lib/stakraf/agent.json'],{encoding:'utf8'}));
+  assert.notEqual(renewed.agent_token,state.agent_token);
+  assert.equal((await fetch(base+'/api/agent/status',{headers:{Authorization:`Bearer ${state.agent_token}`}})).status,401);
+  assert.equal((await fetch(base+'/api/agent/status',{headers:{Authorization:`Bearer ${renewed.agent_token}`}})).status,200);
+  const recoveredPassword=randomUUID();
+  execFileSync('docker',['compose','exec','-T','api','/api','--reset-password',credentials.email],{input:recoveredPassword+'\n',stdio:['pipe','pipe','pipe'],timeout:30000});
+  await request('/api/auth/me','GET',undefined,401);
+  await request('/api/auth/login','POST',credentials,401);
+  await request('/api/auth/login','POST',{email:credentials.email,password:recoveredPassword});
+  assert.ok((await request('/api/audit')).some(item=>item.event_type==='account.password_recovered'));
   console.log('Real Linux connector passed: verified download, systemd installation, enrollment, heartbeat, Docker readiness, deployment HTTP response, logs, stop/start/restart, inventory reconciliation, reinstall and credential revocation.');
 }finally{
   try{execFileSync('sudo',['systemctl','disable','--now','stakraf-agent'],{stdio:'pipe'})}catch{}

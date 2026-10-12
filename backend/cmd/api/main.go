@@ -425,7 +425,7 @@ func (a *API) regenerate(w http.ResponseWriter, r *http.Request, u string) {
 		fail(w, 409, "Server is already connected")
 		return
 	}
-	jsonOut(w, 200, M{"enrollment_token": t, "expires_in_minutes": 15})
+	jsonOut(w, 200, M{"enrollment_token": t, "expires_in_minutes": 15, "reconnect": true})
 }
 func (a *API) enroll(w http.ResponseWriter, r *http.Request) {
 	var x struct {
