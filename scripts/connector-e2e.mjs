@@ -57,11 +57,11 @@ try{
   assert.equal((await fetch('http://127.0.0.1:18088')).status,200);
   assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
   // A valid image with an exiting entrypoint must restore the prior container.
-  execFileSync('docker',['pull','busybox:stable'],{stdio:'pipe'});
-  const exitingDigest=execFileSync('docker',['image','inspect','--format','{{index .RepoDigests 0}}','busybox:stable'],{encoding:'utf8'}).trim();
+  execFileSync('docker',['pull','hello-world:latest'],{stdio:'pipe'});
+  const exitingDigest=execFileSync('docker',['image','inspect','--format','{{index .RepoDigests 0}}','hello-world:latest'],{encoding:'utf8'}).trim();
   const broken=await request(`/api/apps/${app.id}/releases`,'POST',{image:exitingDigest,note:'Expected startup failure',request_id:randomUUID()},201);
   const brokenDecision=await request(`/api/apps/${app.id}/releases/${broken.id}/decision`,'POST',{decision:'approve'});
-  await waitFor('failed upgrade and automatic restoration',async()=>{const j=(await request('/api/jobs')).find(x=>x.id===brokenDecision.job_id);if(j?.status==='failed'){assert.match(j.output,/previous container restored/);return true}return false});
+  await waitFor('failed upgrade and automatic restoration',async()=>{const j=(await request('/api/jobs')).find(x=>x.id===brokenDecision.job_id);if(j?.status==='success')throw Error('Expected exiting image was reported successful: '+j.output);if(j?.status==='failed'){assert.match(j.output,/previous container restored/);return true}return false});
   assert.equal((await fetch('http://127.0.0.1:18088')).status,200,'Prior application responds after failed replacement');
   assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
   const logJob=await request(`/api/apps/${app.id}/actions`,'POST',{kind:'logs'},201);
@@ -106,6 +106,9 @@ try{
   await request('/api/auth/login','POST',{email:credentials.email,password:recoveredPassword});
   assert.ok((await request('/api/audit')).some(item=>item.event_type==='account.password_recovered'));
   console.log('Real Linux connector passed: verified download, systemd installation, enrollment, heartbeat, Docker readiness, deployment HTTP response, logs, stop/start/restart, inventory reconciliation, reinstall and credential revocation.');
+}catch(error){
+  try{console.error('Host test execution states:',JSON.stringify((await request('/api/jobs')).map(j=>({id:j.id,kind:j.kind,status:j.status,output:j.output}))));console.error(execFileSync('sudo',['journalctl','-u','stakraf-agent','--no-pager','-n','50'],{encoding:'utf8'}))}catch{}
+  throw error;
 }finally{
   try{execFileSync('sudo',['systemctl','disable','--now','stakraf-agent'],{stdio:'pipe'})}catch{}
   for(const name of containers){try{execFileSync('docker',['rm','-f',name],{stdio:'pipe'})}catch{}}
