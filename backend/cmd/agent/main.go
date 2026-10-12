@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -38,6 +39,13 @@ type client struct {
 	token string
 	http  *http.Client
 }
+
+type apiError struct {
+	status int
+	detail string
+}
+
+func (e *apiError) Error() string { return fmt.Sprintf("API %d: %s", e.status, e.detail) }
 
 func getenv(k, d string) string {
 	if v := os.Getenv(k); v != "" {
@@ -74,7 +82,7 @@ func (c *client) call(ctx context.Context, method, path string, input any, outpu
 		return e
 	}
 	if res.StatusCode >= 300 {
-		return fmt.Errorf("API %s: %s", res.Status, string(b))
+		return &apiError{status: res.StatusCode, detail: string(b)}
 	}
 	if output != nil {
 		return json.Unmarshal(b, output)
@@ -158,6 +166,53 @@ func netbird() (string, string) {
 	}
 	return "", "unknown"
 }
+
+// Heartbeats run independently so an image pull cannot make a live host look
+// offline. The client is safe for concurrent requests after enrollment.
+func (c *client) heartbeatLoop(ctx context.Context, host string, interval time.Duration) {
+	tick := time.NewTicker(interval)
+	defer tick.Stop()
+	for {
+		ip, nb := netbird()
+		cpu, mem, disk := serverMetrics()
+		requestCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+		err := c.call(requestCtx, "POST", "/api/agent/heartbeat", map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "netbird_ip": ip, "netbird_status": nb, "cpu": cpu, "memory": mem, "disk": disk, "agent_version": "0.3.0"}, nil)
+		cancel()
+		if err != nil {
+			log.Printf("heartbeat: %v", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+		}
+	}
+}
+
+func (c *client) submitResult(ctx context.Context, j Job, ok bool, out string, delay time.Duration) error {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		err = c.call(ctx, "POST", "/api/agent/jobs/"+j.ID+"/complete", map[string]any{"success": ok, "output": out}, nil)
+		if err == nil {
+			return nil
+		}
+		var response *apiError
+		if errors.As(err, &response) && response.status >= 400 && response.status < 500 && response.status != 429 {
+			return err
+		}
+		if attempt == 4 {
+			break
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return err
+}
 func main() {
 	base := strings.TrimRight(getenv("STAKRAF_API_URL", ""), "/")
 	if base == "" {
@@ -195,36 +250,28 @@ func main() {
 		log.Printf("Enrolled server %s. Keep %s private", state.ServerID, stateFile)
 	}
 	c.token = state.Token
+	go c.heartbeatLoop(context.Background(), host, 10*time.Second)
 	tick := time.NewTicker(6 * time.Second)
 	defer tick.Stop()
 	for {
-		ip, nb := netbird()
-		cpu, mem, disk := serverMetrics()
+		var resp struct {
+			Job *Job `json:"job"`
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		e := c.call(ctx, "POST", "/api/agent/heartbeat", map[string]any{"hostname": host, "os": runtime.GOOS + "/" + runtime.GOARCH, "netbird_ip": ip, "netbird_status": nb, "cpu": cpu, "memory": mem, "disk": disk, "agent_version": "0.2.0"}, nil)
+		e := c.call(ctx, "GET", "/api/agent/jobs/next", nil, &resp)
 		cancel()
 		if e != nil {
-			log.Printf("heartbeat: %v", e)
-		} else {
-			var resp struct {
-				Job *Job `json:"job"`
-			}
-			ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-			e = c.call(ctx, "GET", "/api/agent/jobs/next", nil, &resp)
+			log.Printf("poll: %v", e)
+		} else if resp.Job != nil {
+			log.Printf("Running %s job %s", resp.Job.Kind, resp.Job.ID)
+			ok, out := runJob(*resp.Job)
+			ctx, cancel = context.WithTimeout(context.Background(), 55*time.Second)
+			e = c.submitResult(ctx, *resp.Job, ok, out, 2*time.Second)
 			cancel()
 			if e != nil {
-				log.Printf("poll: %v", e)
-			} else if resp.Job != nil {
-				log.Printf("Running %s job %s", resp.Job.Kind, resp.Job.ID)
-				ok, out := runJob(*resp.Job)
-				ctx, cancel = context.WithTimeout(context.Background(), 15*time.Second)
-				e = c.call(ctx, "POST", "/api/agent/jobs/"+resp.Job.ID+"/complete", map[string]any{"success": ok, "output": out}, nil)
-				cancel()
-				if e != nil {
-					log.Printf("Unable to submit job result: %v", e)
-				} else {
-					log.Printf("Job %s success=%t", resp.Job.ID, ok)
-				}
+				log.Printf("Unable to submit job result: %v", e)
+			} else {
+				log.Printf("Job %s success=%t", resp.Job.ID, ok)
 			}
 		}
 		<-tick.C

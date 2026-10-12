@@ -13,13 +13,13 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 | Account and workspace | Account sign-up/sign-in, 7-day HttpOnly sessions, workspace settings |
 | Projects | Create projects, scope infrastructure to project owners |
 | Server management | Single-use expiring enrollment keys, per-host Go agents, heartbeat and status, NetBird observation |
-| Application deployment | Deploy existing container images to owned Linux Docker hosts, retrieve logs, restart/start/stop with job tracking |
+| Application deployment | Deploy existing container images, serialize host jobs, track execution windows, cancel queued work, retry eligible failures, and preserve attempt history |
 | Telemetry | CPU/memory/disk metrics captured by host agent, 60s PostgreSQL samples, 24h trend charts |
 | Incidents | Create, acknowledge, resolve, reopen, severity assignment and project ownership |
 | Change control | Request app start/stop/restart, explicit approve/reject, queue only after approval |
 | Governance | Append-only audit events for major user actions, API key issuance and revocation |
 | External AI | Read-only JSON-RPC MCP HTTP endpoint (projects, infrastructure, apps, incidents, operations) via API keys |
-| UI | Responsive white and graphite operations console with keyboard quick switch (Ctrl/Cmd+K) |
+| UI | White and graphite operations console, filtered execution history, job timelines/output, recovery controls, and keyboard quick switch (Ctrl/Cmd+K) |
 | CI/CD | GitHub Actions: Go tests/vet/build, React production build, Docker/PostgreSQL control-plane smoke checks |
 
 **Not completed:** Cloud-provider purchasing/provisioning, managed NetBird tenant provisioning, public HTTPS/ACME automation, source-to-image CI, multi-user RBAC/organizations, backups/rollback orchestration, automatic repair, SMS/email integration, billing, and production-grade security hardening. The platform is a wide **operational foundation**, not a production-complete managed service. Do not use it to operate critical infrastructure until security and recovery processes are independently reviewed.
@@ -55,6 +55,8 @@ The backend uses Go `pgx` and `bcrypt`, and the UI uses React and Vite. Go check
 ## Integration architecture
 
 To verify an isolated running test stack, run `node scripts/smoke.mjs` (Node 22+). Override `STAKRAF_SMOKE_URL` when needed. This creates test accounts and resources and checks authentication, single-use enrollment, telemetry, approval gates, incidents, settings, audit records, and MCP key revocation. It does not execute Docker jobs on a target host. CI uses a disposable database for this check.
+
+The deployment console shows recent execution metrics, filters by state/project/host/operation, and opens a job inspector with lifecycle timestamps and downloadable output. Queued jobs can be cancelled. Eligible retries are linked to the original job; controlled operations need fresh approval. Host heartbeats continue during long operations. Work without a confirmed result is marked for inspection rather than automatically replayed. See [execution lifecycle](docs/API.md#execution-lifecycle).
 
 ```
        Browser           ChatGPT / Codex / external MCP clients

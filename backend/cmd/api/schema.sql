@@ -62,6 +62,12 @@ CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(expires_at);
 -- Stakraf operations modules. Schema is additive; existing installations retain data.
 ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_kind_check;
 ALTER TABLE jobs ADD CONSTRAINT jobs_kind_check CHECK(kind IN ('deploy','restart','stop','start','logs'));
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS lease_expires_at TIMESTAMPTZ;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS retry_of TEXT REFERENCES jobs(id);
+CREATE UNIQUE INDEX IF NOT EXISTS jobs_retry_once ON jobs(retry_of) WHERE retry_of IS NOT NULL;
+CREATE INDEX IF NOT EXISTS jobs_execution_window ON jobs(lease_expires_at) WHERE status='running';
+-- Older running jobs get a bounded grace period during upgrade.
+UPDATE jobs SET lease_expires_at=now()+interval '5 minutes' WHERE status='running' AND lease_expires_at IS NULL;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS cpu_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS memory_percent DOUBLE PRECISION NOT NULL DEFAULT 0;
 ALTER TABLE servers ADD COLUMN IF NOT EXISTS disk_percent DOUBLE PRECISION NOT NULL DEFAULT 0;

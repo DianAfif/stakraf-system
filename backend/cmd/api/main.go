@@ -196,6 +196,8 @@ func (a *API) handler(w http.ResponseWriter, r *http.Request) {
 		a.action(w, r, uid)
 	case p == "/api/jobs" && r.Method == "GET":
 		a.jobs(w, r, uid)
+	case strings.HasPrefix(p, "/api/jobs/") && r.Method == "POST":
+		a.jobAction(w, r, uid)
 	default:
 		if !a.operations(w, r, uid) {
 			fail(w, 404, "Not found")
@@ -408,54 +410,9 @@ func (a *API) agentHandler(w http.ResponseWriter, r *http.Request) {
 		_, _ = a.db.ExecContext(r.Context(), `INSERT INTO telemetry(server_id,cpu,memory,disk) SELECT $1,$2,$3,$4 WHERE NOT EXISTS (SELECT 1 FROM telemetry WHERE server_id=$1 AND recorded_at>now()-interval '1 minute')`, sid, x.CPU, x.Memory, x.Disk)
 		jsonOut(w, 200, M{"ok": true})
 	case r.URL.Path == "/api/agent/jobs/next" && r.Method == "GET":
-		var i, app, kind string
-		var payload json.RawMessage
-		e := a.db.QueryRowContext(r.Context(), `UPDATE jobs SET status='running',started_at=now() WHERE id=(SELECT id FROM jobs WHERE server_id=$1 AND status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED) RETURNING id,app_id,kind,payload`, sid).Scan(&i, &app, &kind, &payload)
-		if e == sql.ErrNoRows {
-			jsonOut(w, 200, M{"job": nil})
-			return
-		}
-		if e != nil {
-			fail(w, 500, "Job queue unavailable")
-			return
-		}
-		jsonOut(w, 200, M{"job": M{"id": i, "app_id": app, "kind": kind, "payload": json.RawMessage(payload)}})
+		a.nextJob(w, r, sid)
 	case strings.HasPrefix(r.URL.Path, "/api/agent/jobs/") && strings.HasSuffix(r.URL.Path, "/complete") && r.Method == "POST":
-		i := strings.TrimSuffix(pathID(r.URL.Path, "/api/agent/jobs/"), "/complete")
-		var x struct {
-			Success bool   `json:"success"`
-			Output  string `json:"output"`
-		}
-		if read(r, &x) != nil {
-			fail(w, 400, "Invalid completion")
-			return
-		}
-		if len(x.Output) > 10000 {
-			x.Output = x.Output[:10000]
-		}
-		status := "failed"
-		if x.Success {
-			status = "success"
-		}
-		var app, kind string
-		e := a.db.QueryRowContext(r.Context(), `UPDATE jobs SET status=$1,output=$2,finished_at=now() WHERE id=$3 AND server_id=$4 AND status='running' RETURNING app_id,kind`, status, x.Output, i, sid).Scan(&app, &kind)
-		if e != nil {
-			fail(w, 409, "Unknown or already completed job")
-			return
-		}
-		if kind == "deploy" || kind == "restart" || kind == "start" || kind == "stop" {
-			s := "running"
-			if kind == "stop" {
-				s = "stopped"
-			}
-			errText := ""
-			if !x.Success {
-				s = "failed"
-				errText = x.Output
-			}
-			_, _ = a.db.ExecContext(r.Context(), "UPDATE apps SET status=$1,last_error=$2 WHERE id=$3", s, errText, app)
-		}
-		jsonOut(w, 200, M{"ok": true})
+		a.completeJob(w, r, sid)
 	default:
 		fail(w, 404, "Agent route not found")
 	}
@@ -553,7 +510,11 @@ func (a *API) action(w http.ResponseWriter, r *http.Request, u string) {
 	jsonOut(w, 201, M{"job_id": i, "status": "queued"})
 }
 func (a *API) jobs(w http.ResponseWriter, r *http.Request, u string) {
-	rows, e := a.db.QueryContext(r.Context(), `SELECT j.id,j.app_id,j.kind,j.status,j.output,j.created_at,a.name,s.name FROM jobs j JOIN apps a ON j.app_id=a.id JOIN servers s ON s.id=j.server_id JOIN projects p ON a.project_id=p.id WHERE p.owner_id=$1 ORDER BY j.created_at DESC LIMIT 60`, u)
+	if err := a.expireJobs(r.Context(), "", u); err != nil {
+		fail(w, 500, "Could not check execution windows")
+		return
+	}
+	rows, e := a.db.QueryContext(r.Context(), `SELECT j.id,j.app_id,j.kind,j.status,j.output,j.created_at,a.name,s.name,j.started_at,j.finished_at,j.lease_expires_at,coalesce(j.retry_of,''),p.id,p.name,a.image,s.id FROM jobs j JOIN apps a ON j.app_id=a.id JOIN servers s ON s.id=j.server_id JOIN projects p ON a.project_id=p.id WHERE p.owner_id=$1 ORDER BY j.created_at DESC,j.id DESC LIMIT 200`, u)
 	if e != nil {
 		fail(w, 500, "Database error")
 		return
@@ -561,10 +522,11 @@ func (a *API) jobs(w http.ResponseWriter, r *http.Request, u string) {
 	defer rows.Close()
 	data := []M{}
 	for rows.Next() {
-		var i, app, kind, status, output, n, s string
+		var i, app, kind, status, output, n, s, retry, project, projectName, image, serverID string
 		var t time.Time
-		if rows.Scan(&i, &app, &kind, &status, &output, &t, &n, &s) == nil {
-			data = append(data, M{"id": i, "app_id": app, "kind": kind, "status": status, "output": output, "created_at": t, "app_name": n, "server_name": s})
+		var started, finished, expires sql.NullTime
+		if rows.Scan(&i, &app, &kind, &status, &output, &t, &n, &s, &started, &finished, &expires, &retry, &project, &projectName, &image, &serverID) == nil {
+			data = append(data, M{"id": i, "app_id": app, "kind": kind, "status": status, "output": output, "created_at": t, "app_name": n, "server_name": s, "server_id": serverID, "project_id": project, "project_name": projectName, "image": image, "started_at": nullableTime(started), "finished_at": nullableTime(finished), "lease_expires_at": nullableTime(expires), "retry_of": retry})
 		}
 	}
 	jsonOut(w, 200, data)

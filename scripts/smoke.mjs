@@ -1,6 +1,7 @@
 // Run only against an isolated test workspace; this creates persistent test data.
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const base = process.env.STAKRAF_SMOKE_URL || 'http://localhost:3000';
 const origin = new URL(base).origin;
@@ -45,7 +46,7 @@ const app = await request('/api/apps', {
   method: 'POST', status: 201,
   body: { project_id: project.id, server_id: server.id, name: 'ci-app', image: 'nginx:alpine', host_port: 8088, container_port: 80 },
 });
-// Exercise approval persistence without claiming jobs or running containers.
+// Exercise approval persistence; host execution is simulated via its API.
 for (const kind of ['restart', 'stop', 'start']) {
   const before = (await request('/api/jobs')).length;
   const change = await request('/api/changes', {
@@ -64,6 +65,69 @@ const rejected = await request('/api/changes', {
 const beforeReject = (await request('/api/jobs')).length;
 assert.equal((await request(`/api/changes/${rejected.id}/decision`, { method: 'POST', body: { decision: 'reject' } })).status, 'rejected');
 assert.equal((await request('/api/jobs')).length, beforeReject);
+const poll = () => request('/api/agent/jobs/next', { token: agent.agent_token });
+const complete = (id, success, output, status = 200) => request(`/api/agent/jobs/${id}/complete`, {
+  method: 'POST', token: agent.agent_token, body: { success, output }, status,
+});
+const concurrent = await Promise.all(Array.from({ length: 6 }, poll));
+assert.equal(concurrent.filter(result => result.job).length, 1, 'Concurrent polls must claim only one job per host');
+const first = concurrent.find(result => result.job).job;
+assert.equal(first.kind, 'deploy');
+const running = (await request('/api/jobs')).find(job => job.id === first.id);
+assert.ok(running.started_at && running.lease_expires_at, 'Running jobs must have timing and an execution window');
+await request(`/api/jobs/${first.id}/cancel`, { method: 'POST', status: 409 });
+await complete(first.id, true, 'Simulated deployment complete');
+await complete(first.id, true, 'Simulated deployment complete'); // Response-loss retry is idempotent.
+await complete(first.id, false, 'Conflicting result', 409);
+const pendingRestart = (await request('/api/jobs')).find(job => job.kind === 'restart');
+await request(`/api/jobs/${pendingRestart.id}/cancel`, { method: 'POST' });
+await request(`/api/jobs/${pendingRestart.id}/retry`, { method: 'POST', status: 409 });
+assert.equal((await request('/api/jobs')).find(job => job.id === pendingRestart.id).status, 'cancelled');
+for (let attempt = 0; attempt < 5; attempt++) {
+  const result = await poll();
+  if (!result.job) break;
+  await complete(result.job.id, true, 'Simulated controlled operation complete');
+}
+const retryApp = await request('/api/apps', {
+  method: 'POST', status: 201,
+  body: { project_id: project.id, server_id: server.id, name: 'ci-retry', image: 'nginx:alpine', host_port: 8089, container_port: 80 },
+});
+const failed = (await poll()).job;
+assert.equal(failed.id, retryApp.job_id);
+await complete(failed.id, false, 'Simulated image pull failure');
+const retried = await request(`/api/jobs/${failed.id}/retry`, { method: 'POST' });
+await request(`/api/jobs/${failed.id}/retry`, { method: 'POST', status: 409 });
+assert.equal((await request('/api/jobs')).find(job => job.id === retried.job_id).retry_of, failed.id);
+const retryClaim = (await poll()).job;
+assert.equal(retryClaim.id, retried.job_id);
+await complete(retryClaim.id, true, 'Simulated retry complete');
+const logs = await request(`/api/apps/${app.id}/actions`, { method: 'POST', status: 201, body: { kind: 'logs' } });
+await request(`/api/jobs/${logs.job_id}/cancel`, { method: 'POST' });
+const retryLogs = await request(`/api/jobs/${logs.job_id}/retry`, { method: 'POST' });
+assert.equal((await poll()).job.id, retryLogs.job_id);
+await complete(retryLogs.job_id, true, 'Simulated container output');
+// CI can expire a fixture in its disposable PostgreSQL database without a five-minute wait.
+if (process.env.STAKRAF_SMOKE_EXPIRE_FIXTURE === 'true') {
+  const uncertain = await request('/api/apps', {
+    method: 'POST', status: 201,
+    body: { project_id: project.id, server_id: server.id, name: 'ci-timeout', image: 'nginx:alpine', host_port: 8090, container_port: 80 },
+  });
+  assert.equal((await poll()).job.id, uncertain.job_id);
+  assert.match(uncertain.job_id, /^[a-f0-9]{24}$/);
+  execFileSync('docker', ['compose', 'exec', '-T', 'postgres', 'psql', '-U', process.env.POSTGRES_USER || 'stakraf', '-d', process.env.POSTGRES_DB || 'stakraf', '-v', 'ON_ERROR_STOP=1', '-c',
+    `UPDATE jobs SET lease_expires_at=now()-interval '1 second' WHERE id='${uncertain.job_id}'`], { stdio: 'pipe' });
+  await complete(uncertain.job_id, true, 'Late result', 409);
+  assert.equal((await request('/api/jobs')).find(job => job.id === uncertain.job_id).status, 'timed_out');
+  assert.equal((await request('/api/apps')).find(item => item.id === uncertain.id).status, 'unknown');
+  await request(`/api/jobs/${uncertain.job_id}/retry`, { method: 'POST', status: 409 });
+  assert.equal((await poll()).job, null, 'Expired work must not replay automatically');
+}
+const ownerCookie = cookie;
+await request('/api/auth/signup', { method: 'POST', body: { email: `other-${randomUUID()}@example.test`, password: randomUUID() } });
+assert.equal((await request('/api/jobs')).length, 0, 'Execution history is account-scoped');
+await request(`/api/jobs/${failed.id}/retry`, { method: 'POST', status: 404 });
+await request(`/api/jobs/${logs.job_id}/cancel`, { method: 'POST', status: 404 });
+cookie = ownerCookie;
 const incident = await request('/api/incidents', {
   method: 'POST', status: 201,
   body: { project_id: project.id, server_id: server.id, title: 'CI incident check', severity: 'medium', description: 'Test record' },
@@ -90,4 +154,4 @@ await request('/api/auth/logout', { method: 'POST' });
 await request('/api/auth/me', { status: 401 });
 await request('/api/auth/login', { method: 'POST', body: credentials });
 assert.equal((await request('/api/auth/me')).email, credentials.email);
-console.log('Control-plane smoke checks passed: auth, enrollment, telemetry, approval gates, incidents, audit, settings, MCP and revocation.');
+console.log('Control-plane smoke checks passed: auth, enrollment, telemetry, serialized execution, completion replay, cancellation, retry, ownership, approval gates, incidents, audit, settings, MCP and revocation.');

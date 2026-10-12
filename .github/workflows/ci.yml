@@ -15,7 +15,7 @@ jobs:
           go-version-file: backend/go.mod
       - run: go mod download
       - run: go mod verify
-      - run: go test ./...
+      - run: go test -race ./...
       - run: go vet ./...
       - run: go build ./cmd/api ./cmd/agent
       - run: CGO_ENABLED=0 GOOS=linux go build ./cmd/api ./cmd/agent
@@ -52,6 +52,8 @@ jobs:
           docker compose logs api web
           exit 1
       - run: node scripts/smoke.mjs
+        env:
+          STAKRAF_SMOKE_EXPIRE_FIXTURE: 'true'
       - name: Shut down isolated test stack
         if: always()
         run: docker compose down -v
