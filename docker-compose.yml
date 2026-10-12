@@ -1,0 +1,37 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stakraf}
+      POSTGRES_USER: ${POSTGRES_USER:-stakraf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - stakraf_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 4s
+      retries: 10
+    networks: [internal]
+  api:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres: {condition: service_healthy}
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-stakraf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-stakraf}?sslmode=disable
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      PORT: '8080'
+    networks: [internal]
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on: [api]
+    ports:
+      - '${STAKRAF_WEB_BIND:-127.0.0.1}:3000:80'
+    networks: [internal]
+networks:
+  internal:
+volumes:
+  stakraf_pgdata:

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.local
+stakraf-agent-state.json
+.DS_Store
+coverage.out
+backend/api
+backend/agent
+backend/stakraf-agent
+frontend/.vite/
