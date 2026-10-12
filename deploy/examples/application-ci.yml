@@ -1,0 +1,44 @@
+# Copy to your APPLICATION repository's .github/workflows/stakraf.yml.
+# Adapt the test command, Dockerfile and supported CPU architecture before use.
+name: Build and submit Stakraf release
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: stakraf-release
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run application tests (adapt to your project)
+        run: npm ci && npm test
+      - name: Select lowercase registry image name
+        id: image
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      - uses: docker/login-action@65b78e6e13532edd9afa3aa52ac7964289d1a9c1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish
+        id: build
+        uses: docker/build-push-action@f2a1d5e99d037542a71f64918e516c093c6f3fc4
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+      - name: Submit pending release (never auto-approve)
+        run: node scripts/ci-submit.mjs
+        env:
+          STAKRAF_URL: ${{ vars.STAKRAF_URL }}
+          STAKRAF_PIPELINE_TOKEN: ${{ secrets.STAKRAF_PIPELINE_TOKEN }}
+          STAKRAF_RELEASE_IMAGE: ${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}

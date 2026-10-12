@@ -19,11 +19,11 @@ Stakraf System is a self-hostable infrastructure operations control plane built 
 | Incidents | Create, acknowledge, resolve, reopen, severity assignment and project ownership |
 | Change control | Request app start/stop/restart, explicit approve/reject, queue only after approval |
 | Governance | Append-only audit events for major user actions, API key issuance and revocation |
-| External AI | Read-only JSON-RPC MCP HTTP endpoint (projects, infrastructure, apps, incidents, operations) via API keys |
+| External AI | 10 inspection tools, optional approval-only proposals, MCP-only AI keys, connection test and desktop adapter. [Setup and limitations](docs/AI-MCP.md) |
 | UI | White and graphite operations console, filtered execution history, job timelines/output, recovery controls, and keyboard quick switch (Ctrl/Cmd+K) |
 | CI/CD | GitHub Actions: Go tests/vet/build, React production build, Docker/PostgreSQL control-plane smoke checks |
 
-**Not completed:** Cloud-provider purchasing/provisioning, managed NetBird tenant provisioning, public HTTPS/ACME automation, source-to-image CI, multi-user RBAC/organizations, backups/rollback orchestration, automatic repair, SMS/email integration, billing, and production-grade security hardening. The platform is a wide **operational foundation**, not a production-complete managed service. Do not use it to operate critical infrastructure until security and recovery processes are independently reviewed.
+**Deployment profile:** Independent operator-owned workspaces on existing Linux servers, with an installable connector, HTTPS console, execution controls, backups, and host-admin account recovery. Managed cloud/NetBird provisioning, organizations/shared-team RBAC, source builds, billing, email/MFA, automatic repair, and automatic workload HTTPS/rollback are outside this package. This is not represented as a complete managed SaaS service.
 
 ## Quick start
 
@@ -57,6 +57,10 @@ The Go agent needs Docker permissions. **Docker socket access is highly privileg
 The backend uses Go `pgx` and `bcrypt`, and the UI uses React and Vite. Go checksums and the npm lockfile keep local, CI, and Docker dependency installs reproducible. No secrets are included in the repository.
 
 ## Integration architecture
+
+See [Incident management](docs/INCIDENTS.md) for investigation timelines, impact/root-cause records, conflict-safe updates and automatic deployment-failure incidents.
+
+See [Applications & CI/CD](docs/APPLICATIONS-CICD.md) for digest releases, application-scoped pipeline keys, human approval and startup-failure restoration. Release upgrades require connector version 0.5 or newer.
 
 To verify an isolated running test stack, run `node scripts/smoke.mjs` (Node 22+). Override `STAKRAF_SMOKE_URL` when needed. This creates test accounts and resources and checks authentication, single-use enrollment, telemetry, approval gates, incidents, settings, audit records, and MCP key revocation. It does not execute Docker jobs on a target host. CI uses a disposable database for this check.
 

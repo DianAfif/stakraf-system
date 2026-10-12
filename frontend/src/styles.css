@@ -441,3 +441,8 @@ button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-off
 .dialog{max-height:94vh}
 .telemetry-picker{flex-wrap:wrap}
 }
+.mcp-setup { margin-top:24px; border-top:1px solid #dedee3; padding:24px 20px; }
+.mcp-setup h3 { font-size:16px; margin-bottom:12px; }
+.mcp-setup label { display:grid; gap:8px; margin:16px 0; font-size:11px; letter-spacing:.06em; }
+.mcp-setup select,.mcp-setup input { width:100%; padding:11px; border:1px solid #d5d5dc; border-radius:6px; background:#fff; color:#25252c; }
+.mcp-setup pre { white-space:pre-wrap; overflow-wrap:anywhere; }

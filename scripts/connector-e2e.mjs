@@ -14,6 +14,7 @@ let cookie='';
 const containers=[];
 const folder=mkdtempSync(join(tmpdir(),'stakraf-connector-test-'));
 const rootToken=join(folder,'root-enrollment-token');
+const credentials={email:`connector-${randomUUID()}@example.test`,password:randomUUID()};
 async function request(path,method='GET',body,status=200){
   const response=await fetch(base+path,{method,headers:{'Content-Type':'application/json',Origin:new URL(base).origin,...(cookie?{Cookie:cookie}:{})},body:body===undefined?undefined:JSON.stringify(body),signal:AbortSignal.timeout(10000)});
   assert.equal(response.status,status,`${method} ${path} returned ${response.status}`);
@@ -27,7 +28,7 @@ async function waitFor(label,check,timeout=180000){
 }
 const jobFinished=async(id)=>{const job=(await request('/api/jobs')).find(item=>item.id===id);if(job?.status==='failed')throw new Error(`Host job ${id} failed: ${job.output}`);return job?.status==='success'};
 try{
-  await request('/api/auth/signup','POST',{email:`connector-${randomUUID()}@example.test`,password:randomUUID()});
+  await request('/api/auth/signup','POST',credentials);
   const project=await request('/api/projects','POST',{name:'Real connector test'},201);
   const server=await request('/api/servers','POST',{project_id:project.id,name:'systemd-ci-host'},201);
   const script=await fetch(base+'/api/connector/install.sh');assert.equal(script.status,200);
@@ -42,13 +43,29 @@ try{
   execFileSync('sudo',['bash',installer,'--url',base,'--allow-http','--token-file',rootToken],{stdio:'pipe',timeout:120000});
   execFileSync('sudo',['systemctl','is-active','--quiet','stakraf-agent']);
   await waitFor('online host with Docker readiness',async()=>{const host=(await request('/api/servers')).find(item=>item.id===server.id);return host?.online&&host?.docker_ready},60000);
-  assert.match(execFileSync('/usr/local/bin/stakraf-agent',['--version'],{encoding:'utf8'}),/0\.4\.0/);
+  assert.match(execFileSync('/usr/local/bin/stakraf-agent',['--version'],{encoding:'utf8'}),/0\.5\.0/);
   const app=await request('/api/apps','POST',{project_id:project.id,server_id:server.id,name:'real-web',image:'nginxinc/nginx-unprivileged:stable-alpine',host_port:18088,container_port:8080},201);
   assert.match(app.id,/^[a-f0-9]{24}$/);containers.push(`stakraf-${app.id}`);
   await waitFor('real container deployment',()=>jobFinished(app.job_id));
   const web=await fetch('http://127.0.0.1:18088');assert.equal(web.status,200);assert.match(await web.text(),/Welcome to nginx/);
   assert.equal((await request('/api/apps')).find(item=>item.id===app.id).status,'running');
+  // Resolve an immutable digest and perform a real approved replacement.
+  const imageDigest=execFileSync('docker',['image','inspect','--format','{{index .RepoDigests 0}}','nginxinc/nginx-unprivileged:stable-alpine'],{encoding:'utf8'}).trim();
+  const release=await request(`/api/apps/${app.id}/releases`,'POST',{image:imageDigest,note:'Real digest upgrade',request_id:randomUUID()},201);
+  const upgrade=await request(`/api/apps/${app.id}/releases/${release.id}/decision`,'POST',{decision:'approve'});
+  await waitFor('approved container replacement',()=>jobFinished(upgrade.job_id));
+  assert.equal((await fetch('http://127.0.0.1:18088')).status,200);
+  assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
+  // A valid image with an exiting entrypoint must restore the prior container.
+  execFileSync('docker',['pull','hello-world:latest'],{stdio:'pipe'});
+  const exitingDigest=execFileSync('docker',['image','inspect','--format','{{index .RepoDigests 0}}','hello-world:latest'],{encoding:'utf8'}).trim();
+  const broken=await request(`/api/apps/${app.id}/releases`,'POST',{image:exitingDigest,note:'Expected startup failure',request_id:randomUUID()},201);
+  const brokenDecision=await request(`/api/apps/${app.id}/releases/${broken.id}/decision`,'POST',{decision:'approve'});
+  await waitFor('failed upgrade and automatic restoration',async()=>{const j=(await request('/api/jobs')).find(x=>x.id===brokenDecision.job_id);if(j?.status==='success')throw Error('Expected exiting image was reported successful: '+j.output);if(j?.status==='failed'){assert.match(j.output,/previous container restored/);return true}return false});
+  assert.equal((await fetch('http://127.0.0.1:18088')).status,200,'Prior application responds after failed replacement');
+  assert.equal((await request('/api/apps')).find(item=>item.id===app.id).image,imageDigest);
   const logJob=await request(`/api/apps/${app.id}/actions`,'POST',{kind:'logs'},201);
+  assert.ok((await request('/api/incidents')).some(i=>i.source==='job_failure'&&i.app_id===app.id&&i.job_id===brokenDecision.job_id),'Failed replacement creates a linked incident even when the old app is restored');
   await waitFor('real logs',()=>jobFinished(logJob.job_id));
   assert.ok((await request('/api/jobs')).find(item=>item.id===logJob.job_id).output.length>0);
   for(const kind of ['stop','start','restart']){
@@ -73,7 +90,26 @@ try{
   assert.equal((await request('/api/servers')).find(item=>item.id===server.id).enrolled,false);
   const state=JSON.parse(before);
   const revoked=await fetch(base+'/api/agent/status',{headers:{Authorization:`Bearer ${state.agent_token}`}});assert.equal(revoked.status,401);
+  const newEnrollment=await request(`/api/servers/${server.id}/enrollment`,'POST',{});
+  assert.equal(newEnrollment.reconnect,true);
+  const newTokenFile=join(folder,'reconnect-token');writeFileSync(newTokenFile,newEnrollment.enrollment_token,{mode:0o600});
+  execFileSync('sudo',['install','-o','root','-g','root','-m','0600',newTokenFile,rootToken]);
+  execFileSync('sudo',['bash',installer,'--url',base,'--allow-http','--reconnect','--token-file',rootToken],{stdio:'pipe',timeout:120000});
+  await waitFor('reconnected host',async()=>{const host=(await request('/api/servers')).find(item=>item.id===server.id);return host?.online&&host?.docker_ready},60000);
+  const renewed=JSON.parse(execFileSync('sudo',['cat','/var/lib/stakraf/agent.json'],{encoding:'utf8'}));
+  assert.notEqual(renewed.agent_token,state.agent_token);
+  assert.equal((await fetch(base+'/api/agent/status',{headers:{Authorization:`Bearer ${state.agent_token}`}})).status,401);
+  assert.equal((await fetch(base+'/api/agent/status',{headers:{Authorization:`Bearer ${renewed.agent_token}`}})).status,200);
+  const recoveredPassword=randomUUID();
+  execFileSync('docker',['compose','exec','-T','api','/api','--reset-password',credentials.email],{input:recoveredPassword+'\n',stdio:['pipe','pipe','pipe'],timeout:30000});
+  await request('/api/auth/me','GET',undefined,401);
+  await request('/api/auth/login','POST',credentials,401);
+  await request('/api/auth/login','POST',{email:credentials.email,password:recoveredPassword});
+  assert.ok((await request('/api/audit')).some(item=>item.event_type==='account.password_recovered'));
   console.log('Real Linux connector passed: verified download, systemd installation, enrollment, heartbeat, Docker readiness, deployment HTTP response, logs, stop/start/restart, inventory reconciliation, reinstall and credential revocation.');
+}catch(error){
+  try{console.error('Host test execution states:',JSON.stringify((await request('/api/jobs')).map(j=>({id:j.id,kind:j.kind,status:j.status,output:j.output}))));console.error(execFileSync('sudo',['journalctl','-u','stakraf-agent','--no-pager','-n','50'],{encoding:'utf8'}))}catch{}
+  throw error;
 }finally{
   try{execFileSync('sudo',['systemctl','disable','--now','stakraf-agent'],{stdio:'pipe'})}catch{}
   for(const name of containers){try{execFileSync('docker',['rm','-f',name],{stdio:'pipe'})}catch{}}

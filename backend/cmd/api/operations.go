@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -19,17 +17,24 @@ func (a *API) audit(ctx context.Context, uid, projectID, typ, resource, rid, det
 	_, _ = a.db.ExecContext(ctx, `INSERT INTO audit_events(id,user_id,project_id,event_type,resource_type,resource_id,details) VALUES($1,$2,$3,$4,$5,$6,$7)`, id(), uid, project, typ, resource, rid, details)
 }
 func (a *API) apiKeyUser(r *http.Request) string {
+	uid, scope := a.keyIdentity(r)
+	if scope != "api" {
+		return ""
+	}
+	return uid
+}
+func (a *API) keyIdentity(r *http.Request) (string, string) {
 	auth := r.Header.Get("Authorization")
 	if !strings.HasPrefix(auth, "Bearer stk_") {
-		return ""
+		return "", ""
 	}
 	token := strings.TrimPrefix(auth, "Bearer ")
-	var uid string
-	if a.db.QueryRowContext(r.Context(), `SELECT user_id FROM api_keys WHERE token_hash=$1 AND revoked_at IS NULL`, hash(token)).Scan(&uid) != nil {
-		return ""
+	var uid, scope string
+	if a.db.QueryRowContext(r.Context(), `SELECT user_id,scope FROM api_keys WHERE token_hash=$1 AND revoked_at IS NULL`, hash(token)).Scan(&uid, &scope) != nil {
+		return "", ""
 	}
 	_, _ = a.db.ExecContext(r.Context(), `UPDATE api_keys SET last_used_at=now() WHERE token_hash=$1`, hash(token))
-	return uid
+	return uid, scope
 }
 func (a *API) operations(w http.ResponseWriter, r *http.Request, u string) bool {
 	p := r.URL.Path
@@ -42,8 +47,8 @@ func (a *API) operations(w http.ResponseWriter, r *http.Request, u string) bool 
 		a.listIncidents(w, r, u)
 	case p == "/api/incidents" && r.Method == "POST":
 		a.createIncident(w, r, u)
-	case strings.HasPrefix(p, "/api/incidents/") && r.Method == "PATCH":
-		a.updateIncident(w, r, u)
+	case strings.HasPrefix(p, "/api/incidents/"):
+		a.incidentRoute(w, r, u)
 	case p == "/api/changes" && r.Method == "GET":
 		a.listChanges(w, r, u)
 	case p == "/api/changes" && r.Method == "POST":
@@ -89,7 +94,7 @@ func (a *API) telemetry(w http.ResponseWriter, r *http.Request, u string) {
 		fail(w, 404, "Server not found")
 		return
 	}
-	rows, e := a.db.QueryContext(r.Context(), `SELECT recorded_at,cpu,memory,disk FROM (SELECT recorded_at,cpu,memory,disk FROM telemetry WHERE server_id=$1 AND recorded_at>now()-interval '1 day' ORDER BY recorded_at DESC LIMIT 144) t ORDER BY recorded_at`, sid)
+	rows, e := a.db.QueryContext(r.Context(), `SELECT recorded_at,cpu,memory,disk FROM (SELECT recorded_at,cpu,memory,disk FROM telemetry WHERE server_id=$1 AND recorded_at>now()-interval '1 day' ORDER BY recorded_at DESC LIMIT 1440) t ORDER BY recorded_at`, sid)
 	if e != nil {
 		fail(w, 500, "Telemetry unavailable")
 		return
@@ -104,80 +109,6 @@ func (a *API) telemetry(w http.ResponseWriter, r *http.Request, u string) {
 		}
 	}
 	jsonOut(w, 200, data)
-}
-func (a *API) listIncidents(w http.ResponseWriter, r *http.Request, u string) {
-	rows, e := a.db.QueryContext(r.Context(), `SELECT i.id,i.project_id,p.name,coalesce(i.server_id,''),i.title,i.description,i.severity,i.status,i.created_at,i.updated_at FROM incidents i JOIN projects p ON i.project_id=p.id WHERE p.owner_id=$1 ORDER BY CASE WHEN i.status='resolved' THEN 1 ELSE 0 END,i.created_at DESC LIMIT 300`, u)
-	if e != nil {
-		fail(w, 500, "Could not load incidents")
-		return
-	}
-	defer rows.Close()
-	out := []M{}
-	for rows.Next() {
-		var id, pr, pn, s, title, desc, sev, status string
-		var cr, up time.Time
-		if rows.Scan(&id, &pr, &pn, &s, &title, &desc, &sev, &status, &cr, &up) == nil {
-			out = append(out, M{"id": id, "project_id": pr, "project_name": pn, "server_id": s, "title": title, "description": desc, "severity": sev, "status": status, "created_at": cr, "updated_at": up})
-		}
-	}
-	jsonOut(w, 200, out)
-}
-func (a *API) createIncident(w http.ResponseWriter, r *http.Request, u string) {
-	var x struct {
-		ProjectID   string `json:"project_id"`
-		ServerID    string `json:"server_id"`
-		Title       string `json:"title"`
-		Description string `json:"description"`
-		Severity    string `json:"severity"`
-	}
-	if read(r, &x) != nil {
-		fail(w, 400, "Invalid incident")
-		return
-	}
-	x.Title = strings.TrimSpace(x.Title)
-	if !a.ownsProject(r.Context(), u, x.ProjectID) || len(x.Title) < 4 || len(x.Title) > 140 || len(x.Description) > 3000 || !oneOf(x.Severity, "critical", "high", "medium", "low") {
-		fail(w, 400, "Invalid project, title, or severity")
-		return
-	}
-	var sid any
-	if x.ServerID != "" {
-		if !a.ownsServer(r.Context(), u, x.ServerID) {
-			fail(w, 400, "Invalid server")
-			return
-		}
-		var belongs bool
-		if a.db.QueryRowContext(r.Context(), "SELECT project_id=$1 FROM servers WHERE id=$2", x.ProjectID, x.ServerID).Scan(&belongs) != nil || !belongs {
-			fail(w, 400, "Server must belong to incident project")
-			return
-		}
-		sid = x.ServerID
-	}
-	i := id()
-	_, e := a.db.ExecContext(r.Context(), `INSERT INTO incidents(id,project_id,server_id,title,description,severity) VALUES($1,$2,$3,$4,$5,$6)`, i, x.ProjectID, sid, x.Title, x.Description, x.Severity)
-	if e != nil {
-		fail(w, 500, "Could not record incident")
-		return
-	}
-	a.audit(r.Context(), u, x.ProjectID, "incident.created", "incident", i, x.Title)
-	jsonOut(w, 201, M{"id": i})
-}
-func (a *API) updateIncident(w http.ResponseWriter, r *http.Request, u string) {
-	iid := pathID(r.URL.Path, "/api/incidents/")
-	var status struct {
-		Status string `json:"status"`
-	}
-	if read(r, &status) != nil || !oneOf(status.Status, "open", "acknowledged", "resolved") {
-		fail(w, 400, "Invalid incident status")
-		return
-	}
-	var pid string
-	e := a.db.QueryRowContext(r.Context(), `UPDATE incidents i SET status=$1,updated_at=now() FROM projects p WHERE i.id=$2 AND p.id=i.project_id AND p.owner_id=$3 RETURNING i.project_id`, status.Status, iid, u).Scan(&pid)
-	if e != nil {
-		fail(w, 404, "Incident not found")
-		return
-	}
-	a.audit(r.Context(), u, pid, "incident."+status.Status, "incident", iid, "")
-	jsonOut(w, 200, M{"ok": true})
 }
 func oneOf(v string, vs ...string) bool {
 	for _, s := range vs {
@@ -289,7 +220,7 @@ func (a *API) auditList(w http.ResponseWriter, r *http.Request, u string) {
 	jsonOut(w, 200, out)
 }
 func (a *API) keys(w http.ResponseWriter, r *http.Request, u string) {
-	rows, e := a.db.QueryContext(r.Context(), `SELECT id,label,created_at,last_used_at FROM api_keys WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC`, u)
+	rows, e := a.db.QueryContext(r.Context(), `SELECT id,label,created_at,last_used_at,scope FROM api_keys WHERE user_id=$1 AND revoked_at IS NULL ORDER BY created_at DESC`, u)
 	if e != nil {
 		fail(w, 500, "API keys unavailable")
 		return
@@ -297,11 +228,11 @@ func (a *API) keys(w http.ResponseWriter, r *http.Request, u string) {
 	defer rows.Close()
 	out := []M{}
 	for rows.Next() {
-		var i, l string
+		var i, l, scope string
 		var cr time.Time
 		var used sql.NullTime
-		if rows.Scan(&i, &l, &cr, &used) == nil {
-			out = append(out, M{"id": i, "label": l, "created_at": cr, "last_used_at": used.Time})
+		if rows.Scan(&i, &l, &cr, &used, &scope) == nil {
+			out = append(out, M{"id": i, "label": l, "created_at": cr, "last_used_at": used.Time, "scope": scope})
 		}
 	}
 	jsonOut(w, 200, out)
@@ -309,20 +240,28 @@ func (a *API) keys(w http.ResponseWriter, r *http.Request, u string) {
 func (a *API) createKey(w http.ResponseWriter, r *http.Request, u string) {
 	var x struct {
 		Label string `json:"label"`
+		Scope string `json:"scope"`
 	}
 	if read(r, &x) != nil || len(strings.TrimSpace(x.Label)) < 2 || len(x.Label) > 70 {
 		fail(w, 400, "Invalid API key label")
 		return
 	}
 	key := "stk_" + secret(32)
+	if x.Scope == "" {
+		x.Scope = "api"
+	}
+	if !oneOf(x.Scope, "api", "mcp_read", "mcp_propose") {
+		fail(w, 400, "Invalid key scope")
+		return
+	}
 	i := id()
-	_, e := a.db.ExecContext(r.Context(), `INSERT INTO api_keys(id,user_id,label,token_hash) VALUES($1,$2,$3,$4)`, i, u, strings.TrimSpace(x.Label), hash(key))
+	_, e := a.db.ExecContext(r.Context(), `INSERT INTO api_keys(id,user_id,label,token_hash,scope) VALUES($1,$2,$3,$4,$5)`, i, u, strings.TrimSpace(x.Label), hash(key), x.Scope)
 	if e != nil {
 		fail(w, 500, "Could not issue key")
 		return
 	}
 	a.audit(r.Context(), u, "", "access.key_created", "api_key", i, x.Label)
-	jsonOut(w, 201, M{"id": i, "label": x.Label, "key": key})
+	jsonOut(w, 201, M{"id": i, "label": x.Label, "key": key, "scope": x.Scope})
 }
 func (a *API) revokeKey(w http.ResponseWriter, r *http.Request, u string) {
 	i := pathID(r.URL.Path, "/api/keys/")
@@ -374,83 +313,4 @@ func (a *API) updateSettings(w http.ResponseWriter, r *http.Request, u string) {
 	}
 	a.audit(r.Context(), u, "", "workspace.updated", "workspace", u, x.Name)
 	jsonOut(w, 200, M{"ok": true})
-}
-
-// JSON-RPC MCP over HTTP. No proprietary model, only narrowly scoped platform tools.
-func (a *API) mcp(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "POST" {
-		w.Header().Set("Allow", "POST")
-		fail(w, 405, "Use POST")
-		return
-	}
-	u := a.apiKeyUser(r)
-	if u == "" {
-		fail(w, 401, "Bearer API key required")
-		return
-	}
-	var x struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Method  string          `json:"method"`
-		Params  json.RawMessage `json:"params"`
-	}
-	if read(r, &x) != nil || x.JSONRPC != "2.0" {
-		fail(w, 400, "Invalid JSON-RPC request")
-		return
-	}
-	if x.Method == "notifications/initialized" {
-		w.WriteHeader(202)
-		return
-	}
-	result := any(nil)
-	switch x.Method {
-	case "initialize":
-		result = M{"protocolVersion": "2025-03-26", "capabilities": M{"tools": M{"listChanged": false}}, "serverInfo": M{"name": "stakraf-system", "version": "0.2.0"}}
-	case "ping":
-		result = M{}
-	case "tools/list":
-		result = M{"tools": []M{
-			{"name": "list_projects", "description": "Read your Stakraf projects", "inputSchema": M{"type": "object", "properties": M{}}},
-			{"name": "list_servers", "description": "Read authorized connected servers and health", "inputSchema": M{"type": "object", "properties": M{}}},
-			{"name": "list_applications", "description": "Read your deployed applications", "inputSchema": M{"type": "object", "properties": M{}}},
-			{"name": "list_incidents", "description": "Read reported incidents", "inputSchema": M{"type": "object", "properties": M{}}},
-			{"name": "get_operations_summary", "description": "Read the infrastructure operations overview", "inputSchema": M{"type": "object", "properties": M{}}},
-		}}
-	case "tools/call":
-		var args struct {
-			Name      string `json:"name"`
-			Arguments M      `json:"arguments"`
-		}
-		if json.Unmarshal(x.Params, &args) != nil {
-			fail(w, 400, "Invalid tool call")
-			return
-		}
-		var query string
-		switch args.Name {
-		case "list_projects":
-			query = `SELECT coalesce(json_agg(row_to_json(t)),'[]'::json) FROM (SELECT id,name,description FROM projects WHERE owner_id=$1 ORDER BY created_at DESC LIMIT 100) t`
-		case "list_servers":
-			query = `SELECT coalesce(json_agg(row_to_json(t)),'[]'::json) FROM (SELECT s.id,s.name,s.hostname,s.netbird_status,s.cpu_percent,s.memory_percent,s.disk_percent,(s.last_seen>now()-interval '45 seconds') online FROM servers s JOIN projects p ON s.project_id=p.id WHERE p.owner_id=$1 LIMIT 100) t`
-		case "list_applications":
-			query = `SELECT coalesce(json_agg(row_to_json(t)),'[]'::json) FROM (SELECT a.id,a.name,a.image,a.status,a.last_error FROM apps a JOIN projects p ON a.project_id=p.id WHERE p.owner_id=$1 LIMIT 100) t`
-		case "list_incidents":
-			query = `SELECT coalesce(json_agg(row_to_json(t)),'[]'::json) FROM (SELECT i.id,i.title,i.severity,i.status FROM incidents i JOIN projects p ON i.project_id=p.id WHERE p.owner_id=$1 ORDER BY i.created_at DESC LIMIT 100) t`
-		case "get_operations_summary":
-			query = `SELECT json_build_object('projects',(SELECT count(*) FROM projects WHERE owner_id=$1),'servers',(SELECT count(*) FROM servers s JOIN projects p ON p.id=s.project_id WHERE p.owner_id=$1),'applications',(SELECT count(*) FROM apps a JOIN projects p ON p.id=a.project_id WHERE p.owner_id=$1),'open_incidents',(SELECT count(*) FROM incidents i JOIN projects p ON p.id=i.project_id WHERE p.owner_id=$1 AND i.status!='resolved'))`
-		default:
-			jsonOut(w, 200, M{"jsonrpc": "2.0", "id": x.ID, "error": M{"code": -32601, "message": "Unknown tool"}})
-			return
-		}
-		var raw []byte
-		err := a.db.QueryRowContext(r.Context(), query, u).Scan(&raw)
-		if err != nil {
-			jsonOut(w, 200, M{"jsonrpc": "2.0", "id": x.ID, "error": M{"code": -32000, "message": "Tool query failed"}})
-			return
-		}
-		result = M{"content": []M{{"type": "text", "text": string(raw)}}, "isError": false}
-	default:
-		jsonOut(w, 200, M{"jsonrpc": "2.0", "id": x.ID, "error": M{"code": -32601, "message": fmt.Sprintf("Unsupported method %s", x.Method)}})
-		return
-	}
-	jsonOut(w, 200, M{"jsonrpc": "2.0", "id": x.ID, "result": result})
 }

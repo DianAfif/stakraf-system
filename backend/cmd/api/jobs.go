@@ -116,6 +116,12 @@ func (a *API) completeJob(w http.ResponseWriter, r *http.Request, sid string) {
 		return
 	}
 	if kind != "logs" {
+		if x.Success && kind == "deploy" {
+			if _, err = tx.ExecContext(r.Context(), `UPDATE apps SET image=r.image FROM app_releases r WHERE r.job_id=$1 AND apps.id=r.app_id`, i); err != nil {
+				fail(w, 500, "Could not record release image")
+				return
+			}
+		}
 		state, detail := "running", ""
 		if kind == "stop" {
 			state = "stopped"
@@ -126,6 +132,12 @@ func (a *API) completeJob(w http.ResponseWriter, r *http.Request, sid string) {
 		}
 		if _, err = tx.ExecContext(r.Context(), "UPDATE apps SET status=$1,last_error=$2 WHERE id=$3", state, detail, app); err != nil {
 			fail(w, 500, "Could not update application")
+			return
+		}
+	}
+	if kind == "deploy" && !x.Success {
+		if err = a.failedDeploymentIncident(r, tx, app, i); err != nil {
+			fail(w, 500, "Could not record deployment incident")
 			return
 		}
 	}
@@ -176,6 +188,11 @@ func (a *API) jobAction(w http.ResponseWriter, r *http.Request, u string) {
 			_, err = tx.ExecContext(r.Context(), `UPDATE apps SET status='cancelled',last_error='' WHERE id=$1`, app)
 		}
 	} else {
+		var release bool
+		if tx.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM app_releases WHERE job_id=$1)", parts[0]).Scan(&release) != nil || release {
+			fail(w, 409, "Submit a new release for approval instead of retrying an upgrade")
+			return
+		}
 		if !retryAllowed(kind, status) {
 			fail(w, 409, "This job cannot be retried directly. Inspect uncertain deployments; controlled operations require a new approval.")
 			return

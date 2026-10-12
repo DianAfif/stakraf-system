@@ -20,7 +20,7 @@ func TestRunJobRejectsUnsafeImage(t *testing.T) {
 func TestRunJobWithMockedDocker(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "docker")
-	script := "#!/bin/sh\ncase \"$1\" in\n  container) exit 1;;\n  pull) echo pulled;;\n  run) echo fake-container-id;;\n  inspect) echo true;;\n  restart) echo restarted;;\n  logs) echo 'test output';;\nesac\n"
+	script := "#!/bin/sh\ncase \"$1\" in\n  container) exit 1;;\n  pull) echo pulled;;\n  run) echo fake-container-id;;\n  inspect) echo 'running 0';;\n  restart) echo restarted;;\n  logs) echo 'test output';;\nesac\n"
 	if err := os.WriteFile(exe, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}

@@ -1,4 +1,5 @@
 .connector-wizard{padding:24px}
+.live-dot.unavailable{background:var(--amber);box-shadow:none}
 .connector-progress{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid var(--border);margin-bottom:24px;background:var(--bg)}
 .connector-progress>div{display:flex;align-items:center;gap:9px;padding:13px;border-right:1px solid var(--border);font-size:11px;color:var(--muted)}
 .connector-progress>div:last-child{border:0}
